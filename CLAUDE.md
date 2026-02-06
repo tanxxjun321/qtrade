@@ -15,7 +15,7 @@ qtrade - 量化交易盯盘系统。从 macOS 上的富途牛牛 App 获取实�
 ## Build & Development Commands
 
 - `cargo build` - 构建项目
-- `cargo test` - 运行所有测试（19 个单元测试）
+- `cargo test` - 运行所有测试（24 个单元测试）
 - `cargo run -- watchlist` - 显示自选股列表（从富途 plist 读取）
 - `cargo run -- start` - 启动盯盘系统（ratatui TUI）
 - `cargo run -- debug` - 检查 AX 权限并打印 App 元素树
@@ -29,24 +29,25 @@ qtrade - 量化交易盯盘系统。从 macOS 上的富途牛牛 App 获取实�
 src/
 ├── main.rs                  # CLI 入口 (clap)：start / watchlist / debug
 ├── config.rs                # TOML 配置加载 (serde)
-├── models.rs                # 核心数据模型：StockCode, QuoteSnapshot, Signal, AlertEvent
+├── models.rs                # 核心数据模型：StockCode, QuoteSnapshot, Signal, DailyKline, TimedSignal, AlertEvent
 ├── futu/
 │   ├── watchlist.rs         # 读取 plist 自选股（自动扫描用户目录）
 │   ├── accessibility.rs     # macOS AXUIElement 读取 App 窗口
-│   └── openapi.rs           # FutuOpenD TCP 客户端（JSON 模式）
+│   └── openapi.rs           # FutuOpenD TCP 客户端（JSON 模式，含日K线 proto 3103）
 ├── data/
 │   ├── provider.rs          # DataProviderKind 枚举分发（AX / OpenAPI）
 │   └── parser.rs            # 文本 → QuoteSnapshot 解析
 ├── analysis/
+│   ├── daily.rs             # 日K线分析引擎（JSON 缓存 + 增量更新 + MA/MACD/RSI 信号）
 │   ├── indicators.rs        # SMA / EMA / MACD / RSI 纯计算
-│   ├── engine.rs            # 滚动窗口 + 指标调度
+│   ├── engine.rs            # 滚动窗口 + 指标调度（Tick 级别）
 │   └── signals.rs           # 金叉/死叉/超买超卖/放量检测
 ├── alerts/
 │   ├── rules.rs             # 涨跌幅/目标价/信号/放量规则
 │   ├── manager.rs           # 规则评估 + 冷却机制
 │   └── notify.rs            # 终端 + macOS 通知 + Webhook
 ├── ui/
-│   └── dashboard.rs         # ratatui TUI 仪表盘
+│   └── dashboard.rs         # ratatui TUI 仪表盘（含日线信号显示）
 └── trading/
     └── paper.rs             # 纸上交易（预留）
 ```
@@ -55,16 +56,38 @@ src/
 
 ```
 数据源 → DataProviderKind → QuoteSnapshot
-  → AnalysisEngine (指标计算)
+  → AnalysisEngine (Tick 指标计算)
   → AlertManager (规则评估 + 通知)
   → DashboardState (TUI 渲染)
+
+日K线 → OpenAPI proto 3103 → DailyAnalysisEngine (日线指标 + 信号)
+  → JSON 缓存 (~/.config/qtrade/kline_cache.json)
+  → DashboardState (日线信号以 [日] 前缀显示)
 ```
 
-组件间通过 `tokio::sync::mpsc` channel 通信。
+组件间通过 `tokio::sync::mpsc` channel 通信。日K线通过独立 TCP 连接异步获取。
+
+### 日K线分析
+
+- **数据获取**：FutuOpenD proto 3103 (QOT_REQUEST_HISTORY_KL)，前复权，逐只拉取，200ms 间隔防限流
+- **本地缓存**：JSON 文件 `~/.config/qtrade/kline_cache.json`，最多保留 150 天
+- **增量更新**：缓存 ≤3 天时拉取最近 5 天增量合并；>3 天或无缓存时全量拉取 120 天
+- **断点续传**：每拉取 10 只即存盘 + 同步 dashboard
+- **市场过滤**：仅拉取已订阅市场的股票，跳过无权限品种
+- **信号检测**：MA5/10/20/60 金叉死叉、MACD 金叉死叉、RSI6/12/24 超买超卖
+
+### TUI 快捷键
+
+- `↑↓` 选择行
+- `s` 切换排序列
+- `d` 切换日线信号显示/隐藏
+- `i` 切换指标显示
+- `q` 退出
 
 ### 关键数据路径
 
 - 富途本地数据：`~/Library/Containers/cn.futu.Niuniu/Data/Library/Application Support/{user_id}/watchstockContainer.dat`
+- 日K线缓存：`~/.config/qtrade/kline_cache.json`
 - 价格精度：plist 整数 ÷ 10^11
 - 股票编码：`1XXXXXX`=沪市, `2XXXXXX`=深市, 其他=港股
 
@@ -84,6 +107,11 @@ opend_port = 11111
 [alerts]
 change_threshold_pct = 3.0
 cooldown_secs = 300
+
+[analysis]
+daily_kline_enabled = true
+daily_kline_days = 120
+daily_kline_refresh_minutes = 30
 ```
 
 ### 工具链
