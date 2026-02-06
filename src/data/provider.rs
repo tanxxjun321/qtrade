@@ -6,10 +6,12 @@ use anyhow::Result;
 use tokio::sync::mpsc;
 use tracing::info;
 
+use std::collections::{HashMap, HashSet};
+
 use crate::config::AppConfig;
 use crate::futu::accessibility::AccessibilityReader;
 use crate::futu::openapi::OpenApiClient;
-use crate::models::{QuoteSnapshot, StockCode};
+use crate::models::{DailyKline, Market, QuoteSnapshot, StockCode};
 
 /// Accessibility API 数据提供者
 pub struct AccessibilityProvider {
@@ -74,6 +76,21 @@ impl OpenApiProvider {
         self.client.get_basic_quotes(codes).await
     }
 
+    /// 获取历史日K线数据
+    pub async fn get_daily_klines(
+        &mut self,
+        stocks: &[StockCode],
+        days: u32,
+    ) -> Result<HashMap<StockCode, Vec<DailyKline>>> {
+        let end = chrono::Local::now().format("%Y-%m-%d").to_string();
+        let begin = (chrono::Local::now() - chrono::Duration::days(days as i64 * 2))
+            .format("%Y-%m-%d")
+            .to_string();
+        self.client
+            .request_history_kline_batch(stocks, &begin, &end, days)
+            .await
+    }
+
     pub fn name(&self) -> &str {
         "OpenAPI"
     }
@@ -84,6 +101,10 @@ impl OpenApiProvider {
 
     pub fn set_quote_channel(&mut self, tx: mpsc::Sender<QuoteSnapshot>) {
         self.client.set_quote_channel(tx);
+    }
+
+    pub fn subscribed_markets(&self) -> HashSet<Market> {
+        self.client.subscribed_markets().clone()
     }
 }
 
@@ -133,6 +154,18 @@ impl DataProviderKind {
         }
     }
 
+    /// 获取历史日K线数据（Accessibility 模式返回空 Map）
+    pub async fn get_daily_klines(
+        &mut self,
+        stocks: &[StockCode],
+        days: u32,
+    ) -> Result<HashMap<StockCode, Vec<DailyKline>>> {
+        match self {
+            DataProviderKind::Accessibility(_) => Ok(HashMap::new()),
+            DataProviderKind::OpenApi(p) => p.get_daily_klines(stocks, days).await,
+        }
+    }
+
     pub fn name(&self) -> &str {
         match self {
             DataProviderKind::Accessibility(p) => p.name(),
@@ -144,6 +177,14 @@ impl DataProviderKind {
         match self {
             DataProviderKind::Accessibility(p) => p.is_connected(),
             DataProviderKind::OpenApi(p) => p.is_connected(),
+        }
+    }
+
+    /// 获取已订阅成功的市场集合
+    pub fn subscribed_markets(&self) -> HashSet<Market> {
+        match self {
+            DataProviderKind::Accessibility(_) => HashSet::new(),
+            DataProviderKind::OpenApi(p) => p.subscribed_markets(),
         }
     }
 }

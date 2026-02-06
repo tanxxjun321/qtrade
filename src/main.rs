@@ -17,6 +17,7 @@ use tracing::{info, warn};
 use crate::alerts::manager::AlertManager;
 use crate::alerts::notify::Notifier;
 use crate::alerts::rules::{ChangeThresholdRule, SignalRule, VolumeSpikeRule};
+use crate::analysis::daily::DailyAnalysisEngine;
 use crate::analysis::engine::AnalysisEngine;
 use crate::config::AppConfig;
 use crate::data::provider::DataProviderKind;
@@ -188,6 +189,20 @@ async fn cmd_start(config: AppConfig) -> Result<()> {
         }
     }
 
+    // 获取已订阅市场，用于过滤K线请求
+    let subscribed_markets = provider.subscribed_markets();
+
+    // 创建日线分析引擎，加载缓存
+    let daily_engine = Arc::new(Mutex::new(DailyAnalysisEngine::new()));
+    let cache_last_updated = {
+        let mut de = daily_engine.lock().await;
+        let last = de.load_cache();
+        if de.stock_count() > 0 {
+            info!("Loaded daily kline cache: {} stocks", de.stock_count());
+        }
+        last
+    };
+
     // 创建分析引擎
     let engine = Arc::new(Mutex::new(AnalysisEngine::new(200)));
 
@@ -227,6 +242,19 @@ async fn cmd_start(config: AppConfig) -> Result<()> {
             })
             .collect();
         state.update_quotes(initial_quotes);
+
+        // 如果有缓存，立即填充日线数据
+        {
+            let de = daily_engine.lock().await;
+            if de.stock_count() > 0 {
+                state.daily_indicators = de.get_indicators().clone();
+                state.daily_signals = de.get_signals().clone();
+                let sig_count: usize =
+                    state.daily_signals.values().map(|v| v.len()).sum();
+                state.daily_kline_status =
+                    format!("日K:{}只 信号:{} (缓存)", de.stock_count(), sig_count);
+            }
+        }
     }
 
     // 数据采集任务
@@ -259,6 +287,150 @@ async fn cmd_start(config: AppConfig) -> Result<()> {
             }
         }
     });
+
+    // 日K线异步获取任务（启动后立即获取，之后定时刷新）
+    let daily_refresh_handle = if config.analysis.daily_kline_enabled {
+        let daily_engine_clone = daily_engine.clone();
+        let dash_for_daily = dash_state.clone();
+        let futu_host = config.futu.opend_host.clone();
+        let futu_port = config.futu.opend_port;
+        let daily_days = config.analysis.daily_kline_days;
+        let refresh_mins = config.analysis.daily_kline_refresh_minutes;
+        let cached_date = cache_last_updated.clone();
+
+        // 只拉取已订阅市场的股票
+        let daily_codes: Vec<StockCode> = stock_codes
+            .iter()
+            .filter(|s| subscribed_markets.contains(&s.market))
+            .cloned()
+            .collect();
+        info!(
+            "Daily K-line target: {} stocks (subscribed markets: {:?})",
+            daily_codes.len(),
+            subscribed_markets
+        );
+
+        Some(tokio::spawn(async move {
+            let mut first = true;
+            loop {
+                if !first {
+                    if refresh_mins == 0 {
+                        return; // 仅启动时获取一次
+                    }
+                    tokio::time::sleep(Duration::from_secs(refresh_mins * 60)).await;
+                }
+
+                // 判断全量还是增量
+                let need_full = if first {
+                    match &cached_date {
+                        Some(d) => {
+                            crate::analysis::daily::cache_needs_full_refresh(d, 3)
+                        }
+                        None => true,
+                    }
+                } else {
+                    false // 运行中刷新始终增量
+                };
+                first = false;
+
+                let fetch_days: u32 = if need_full { daily_days } else { 5 };
+                let mode = if need_full { "全量" } else { "增量" };
+                let total = daily_codes.len();
+
+                info!("Fetching daily K-line data ({}，{}天，{}只)...", mode, fetch_days, total);
+                {
+                    let mut state = dash_for_daily.lock().await;
+                    state.daily_kline_status =
+                        format!("日K{}中(0/{})", mode, total);
+                }
+
+                // 创建独立连接
+                let mut client =
+                    crate::futu::openapi::OpenApiClient::new(&futu_host, futu_port);
+                match client.connect().await {
+                    Ok(()) => {
+                        let end = chrono::Local::now().format("%Y-%m-%d").to_string();
+                        let begin = (chrono::Local::now()
+                            - chrono::Duration::days(fetch_days as i64 * 2))
+                            .format("%Y-%m-%d")
+                            .to_string();
+
+                        // 逐只拉取，即时合并
+                        let mut fetched = 0u32;
+                        for (i, stock) in daily_codes.iter().enumerate() {
+                            match client
+                                .request_history_kline(stock, &begin, &end, fetch_days)
+                                .await
+                            {
+                                Ok(klines) => {
+                                    if !klines.is_empty() {
+                                        let mut data = std::collections::HashMap::new();
+                                        data.insert(stock.clone(), klines);
+                                        let mut de = daily_engine_clone.lock().await;
+                                        de.merge_update(data);
+                                        fetched += 1;
+                                    }
+                                }
+                                Err(e) => {
+                                    warn!(
+                                        "Failed to get klines for {}: {}",
+                                        stock.display_code(),
+                                        e
+                                    );
+                                }
+                            }
+
+                            // 更新进度
+                            {
+                                let mut state = dash_for_daily.lock().await;
+                                state.daily_kline_status =
+                                    format!("日K{}中({}/{})", mode, i + 1, total);
+                            }
+
+                            // 每 10 只存盘一次 + 同步 dashboard
+                            if (i + 1) % 10 == 0 || i + 1 == total {
+                                let de = daily_engine_clone.lock().await;
+                                de.save_cache();
+                                let mut state = dash_for_daily.lock().await;
+                                state.daily_indicators = de.get_indicators().clone();
+                                state.daily_signals = de.get_signals().clone();
+                            }
+
+                            // 间隔 200ms 防限流
+                            if i + 1 < total {
+                                tokio::time::sleep(Duration::from_millis(200)).await;
+                            }
+                        }
+
+                        // 最终状态
+                        {
+                            let de = daily_engine_clone.lock().await;
+                            let mut state = dash_for_daily.lock().await;
+                            state.daily_indicators = de.get_indicators().clone();
+                            state.daily_signals = de.get_signals().clone();
+                            let sig_count: usize =
+                                state.daily_signals.values().map(|v| v.len()).sum();
+                            state.daily_kline_status =
+                                format!("日K:{}只 信号:{}", de.stock_count(), sig_count);
+                            info!(
+                                "Daily K-line {} complete: fetched {}, total {}, {} signals",
+                                mode, fetched, de.stock_count(), sig_count
+                            );
+                        }
+
+                        client.disconnect().await;
+                    }
+                    Err(e) => {
+                        let mut state = dash_for_daily.lock().await;
+                        state.daily_kline_status = "日K连接失败".to_string();
+                        warn!("Daily K-line connect failed: {}", e);
+                    }
+                }
+            }
+        }))
+    } else {
+        None
+    };
 
     // 分析 + 提醒任务
     let engine_clone = engine.clone();
@@ -320,6 +492,9 @@ async fn cmd_start(config: AppConfig) -> Result<()> {
     ui::dashboard::restore_terminal()?;
     fetch_handle.abort();
     analysis_handle.abort();
+    if let Some(h) = daily_refresh_handle {
+        h.abort();
+    }
 
     info!("qtrade 已退出");
     Ok(())
