@@ -232,6 +232,43 @@ impl fmt::Display for Signal {
     }
 }
 
+/// K线时间周期
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Timeframe {
+    /// Tick 级别（实时）
+    Tick,
+    /// 日线级别
+    Daily,
+}
+
+/// 日K线数据
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct DailyKline {
+    pub open: f64,
+    pub close: f64,
+    pub high: f64,
+    pub low: f64,
+    pub volume: u64,
+    pub turnover: f64,
+    pub date: String,
+}
+
+/// 带时间周期标签的信号
+#[derive(Debug, Clone, PartialEq)]
+pub struct TimedSignal {
+    pub signal: Signal,
+    pub timeframe: Timeframe,
+}
+
+impl fmt::Display for TimedSignal {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self.timeframe {
+            Timeframe::Tick => write!(f, "{}", self.signal),
+            Timeframe::Daily => write!(f, "[日]{}", self.signal),
+        }
+    }
+}
+
 /// 提醒事件
 #[derive(Debug, Clone)]
 pub struct AlertEvent {

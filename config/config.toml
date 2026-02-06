@@ -17,3 +17,8 @@ change_threshold_pct = 3.0
 [ui]
 page_size = 50
 show_indicators = true
+
+[analysis]
+daily_kline_enabled = true
+daily_kline_days = 120
+daily_kline_refresh_minutes = 30

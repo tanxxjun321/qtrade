@@ -14,7 +14,7 @@ use tokio::net::TcpStream;
 use tokio::sync::mpsc;
 use tracing::{debug, error, info, warn};
 
-use crate::models::{DataSource, Market, QuoteSnapshot, StockCode};
+use crate::models::{DataSource, DailyKline, Market, QuoteSnapshot, StockCode};
 
 /// Futu 协议头部大小
 const HEADER_SIZE: usize = 44;
@@ -32,6 +32,7 @@ mod proto_id {
     pub const QOT_SUB: u32 = 3001;
     pub const QOT_GET_BASIC_QOT: u32 = 3004;
     pub const QOT_UPDATE_BASIC_QOT: u32 = 3005; // 推送
+    pub const QOT_REQUEST_HISTORY_KL: u32 = 3103; // 历史K线
 }
 
 /// Futu 市场代码（QotMarket 枚举值）
@@ -240,6 +241,11 @@ impl OpenApiClient {
     }
 
     /// 设置行情推送通道
+    /// 获取已订阅成功的市场集合
+    pub fn subscribed_markets(&self) -> &HashSet<Market> {
+        &self.subscribed_markets
+    }
+
     pub fn set_quote_channel(&mut self, tx: mpsc::Sender<QuoteSnapshot>) {
         self.quote_tx = Some(tx);
     }
@@ -518,6 +524,150 @@ impl OpenApiClient {
         )
     }
 
+    /// 请求单只股票的历史日K线
+    pub async fn request_history_kline(
+        &mut self,
+        stock: &StockCode,
+        begin: &str,
+        end: &str,
+        max_count: u32,
+    ) -> Result<Vec<DailyKline>> {
+        let body = serde_json::json!({
+            "c2s": {
+                "security": {
+                    "market": stock_code_to_futu_market(stock),
+                    "code": &stock.code
+                },
+                "klType": 1,
+                "rehabType": 1,
+                "beginTime": begin,
+                "endTime": end,
+                "maxCount": max_count,
+                "needKLFieldsFlag": 127
+            }
+        });
+
+        let body_bytes = serde_json::to_vec(&body)?;
+        self.send_packet_with_fmt(proto_id::QOT_REQUEST_HISTORY_KL, &body_bytes, 1)
+            .await?;
+
+        let response = self
+            .recv_response(proto_id::QOT_REQUEST_HISTORY_KL)
+            .await?;
+
+        // 尝试 JSON 解码
+        if let Ok(json_resp) = serde_json::from_slice::<serde_json::Value>(&response) {
+            let ret_type = json_resp
+                .get("retType")
+                .and_then(|v| v.as_i64())
+                .unwrap_or(-1);
+            if ret_type != 0 {
+                let ret_msg = json_resp
+                    .get("retMsg")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("unknown");
+                anyhow::bail!("QotRequestHistoryKL error: {}", ret_msg);
+            }
+            return Ok(parse_kline_json(&json_resp));
+        }
+
+        anyhow::bail!(
+            "Failed to decode QotRequestHistoryKL response ({} bytes)",
+            response.len()
+        )
+    }
+
+    /// 批量请求多只股票的历史日K线（顺序请求，每次间隔 200ms 防限流）
+    pub async fn request_history_kline_batch(
+        &mut self,
+        stocks: &[StockCode],
+        begin: &str,
+        end: &str,
+        max_count: u32,
+    ) -> Result<std::collections::HashMap<StockCode, Vec<DailyKline>>> {
+        let mut result = std::collections::HashMap::new();
+
+        for (i, stock) in stocks.iter().enumerate() {
+            match self
+                .request_history_kline(stock, begin, end, max_count)
+                .await
+            {
+                Ok(klines) => {
+                    debug!(
+                        "Got {} daily klines for {}",
+                        klines.len(),
+                        stock.display_code()
+                    );
+                    result.insert(stock.clone(), klines);
+                }
+                Err(e) => {
+                    warn!(
+                        "Failed to get klines for {}: {}",
+                        stock.display_code(),
+                        e
+                    );
+                }
+            }
+
+            // 间隔 200ms 防限流（最后一个不需要等）
+            if i + 1 < stocks.len() {
+                tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+            }
+        }
+
+        Ok(result)
+    }
+
+    /// 批量请求历史日K线，带进度回调更新到仪表盘
+    pub async fn request_history_kline_batch_with_progress(
+        &mut self,
+        stocks: &[StockCode],
+        begin: &str,
+        end: &str,
+        max_count: u32,
+        dash_state: &std::sync::Arc<tokio::sync::Mutex<crate::ui::dashboard::DashboardState>>,
+    ) -> Result<std::collections::HashMap<StockCode, Vec<DailyKline>>> {
+        let mut result = std::collections::HashMap::new();
+        let total = stocks.len();
+
+        for (i, stock) in stocks.iter().enumerate() {
+            match self
+                .request_history_kline(stock, begin, end, max_count)
+                .await
+            {
+                Ok(klines) => {
+                    info!(
+                        "Got {} daily klines for {}",
+                        klines.len(),
+                        stock.display_code()
+                    );
+                    result.insert(stock.clone(), klines);
+                }
+                Err(e) => {
+                    warn!(
+                        "Failed to get klines for {}: {}",
+                        stock.display_code(),
+                        e
+                    );
+                }
+            }
+
+            // 更新进度
+            {
+                let mut state = dash_state.lock().await;
+                state.daily_kline_status =
+                    format!("日K获取中({}/{})", i + 1, total);
+            }
+
+            // 间隔 200ms 防限流（最后一个不需要等）
+            if i + 1 < total {
+                tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+            }
+        }
+
+        Ok(result)
+    }
+
     /// 启动推送接收循环
     pub async fn start_push_loop(mut self) -> Result<()> {
         info!("Starting push receive loop");
@@ -782,6 +932,31 @@ fn stock_code_to_futu_market(code: &StockCode) -> i32 {
         Market::SZ => futu_market::CN_SZ,
         Market::Unknown => futu_market::HK,
     }
+}
+
+/// 从 JSON 响应解析历史K线
+fn parse_kline_json(resp: &serde_json::Value) -> Vec<DailyKline> {
+    let Some(list) = resp.pointer("/s2c/klList").and_then(|v| v.as_array()) else {
+        return Vec::new();
+    };
+
+    list.iter()
+        .filter_map(|kl| {
+            Some(DailyKline {
+                open: kl.get("openPrice").and_then(|v| v.as_f64()).unwrap_or(0.0),
+                close: kl.get("closePrice").and_then(|v| v.as_f64()).unwrap_or(0.0),
+                high: kl.get("highPrice").and_then(|v| v.as_f64()).unwrap_or(0.0),
+                low: kl.get("lowPrice").and_then(|v| v.as_f64()).unwrap_or(0.0),
+                volume: kl.get("volume").and_then(|v| v.as_i64()).unwrap_or(0) as u64,
+                turnover: kl.get("turnover").and_then(|v| v.as_f64()).unwrap_or(0.0),
+                date: kl
+                    .get("time")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string(),
+            })
+        })
+        .collect()
 }
 
 /// Futu 市场代码 → StockCode

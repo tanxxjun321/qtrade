@@ -14,7 +14,7 @@ use ratatui::widgets::*;
 
 use crate::models::{
     AlertEvent, AlertSeverity, QuoteSnapshot, Signal, StockCode,
-    TechnicalIndicators,
+    TechnicalIndicators, TimedSignal,
 };
 
 /// 仪表盘状态
@@ -45,6 +45,14 @@ pub struct DashboardState {
     pub sort_column: SortColumn,
     /// 排序方向
     pub sort_ascending: bool,
+    /// 日线技术指标
+    pub daily_indicators: HashMap<StockCode, TechnicalIndicators>,
+    /// 日线信号
+    pub daily_signals: HashMap<StockCode, Vec<TimedSignal>>,
+    /// 是否显示日线信号
+    pub show_daily_signals: bool,
+    /// 日K线获取状态（显示在状态栏）
+    pub daily_kline_status: String,
 }
 
 /// 排序列
@@ -73,6 +81,10 @@ impl DashboardState {
             show_indicators: true,
             sort_column: SortColumn::ChangePct,
             sort_ascending: false,
+            daily_indicators: HashMap::new(),
+            daily_signals: HashMap::new(),
+            show_daily_signals: true,
+            daily_kline_status: String::new(),
         }
     }
 
@@ -205,47 +217,61 @@ fn render_quote_table(frame: &mut Frame, area: Rect, state: &DashboardState) {
         .iter()
         .enumerate()
         .map(|(i, q)| {
+            let selected = i == state.selected_row;
+
             let change_color = if q.change_pct > 0.0 {
-                Color::Red
+                if selected { Color::LightRed } else { Color::Red }
             } else if q.change_pct < 0.0 {
-                Color::Green
+                if selected { Color::LightGreen } else { Color::Green }
             } else {
-                Color::White
+                if selected { Color::White } else { Color::White }
             };
 
-            let signals = state
-                .signals
-                .get(&q.code)
-                .map(|sigs| {
-                    sigs.iter()
-                        .map(|s| s.to_string())
-                        .collect::<Vec<_>>()
-                        .join(" ")
-                })
-                .unwrap_or_default();
+            let signal_color = if selected { Color::LightMagenta } else { Color::Magenta };
 
+            let mut signal_parts: Vec<String> = Vec::new();
+
+            // Tick 信号
+            if let Some(sigs) = state.signals.get(&q.code) {
+                for s in sigs {
+                    signal_parts.push(s.to_string());
+                }
+            }
+
+            // 日线信号
+            if state.show_daily_signals {
+                if let Some(sigs) = state.daily_signals.get(&q.code) {
+                    for s in sigs {
+                        signal_parts.push(s.to_string());
+                    }
+                }
+            }
+
+            let signals = signal_parts.join("  ");
+
+            // Cell 只设 fg，不设 bg — bg 由 Row style 统一控制
             let cells = vec![
                 Cell::from(q.code.display_code()),
                 Cell::from(q.name.clone()),
                 Cell::from(format!("{:.2}", q.last_price))
-                    .style(Style::default().fg(change_color)),
+                    .style(Style::new().fg(change_color)),
                 Cell::from(format!("{:+.2}%", q.change_pct))
-                    .style(Style::default().fg(change_color)),
+                    .style(Style::new().fg(change_color)),
                 Cell::from(format!("{:+.2}", q.change))
-                    .style(Style::default().fg(change_color)),
+                    .style(Style::new().fg(change_color)),
                 Cell::from(format_volume(q.volume)),
                 Cell::from(format!("{:.2}", q.turnover_rate)),
                 Cell::from(format!("{:.2}", q.amplitude)),
-                Cell::from(signals).style(Style::default().fg(Color::Magenta)),
+                Cell::from(signals).style(Style::new().fg(signal_color)),
             ];
 
-            let style = if i == state.selected_row {
-                Style::default().bg(Color::DarkGray)
+            let row_style = if selected {
+                Style::default().bg(Color::DarkGray).fg(Color::White)
             } else {
                 Style::default()
             };
 
-            Row::new(cells).style(style)
+            Row::new(cells).style(row_style)
         })
         .collect();
 
@@ -331,9 +357,15 @@ fn render_status_bar(frame: &mut Frame, area: Rect, state: &DashboardState) {
         None => String::new(),
     };
 
+    let daily_info = if state.daily_kline_status.is_empty() {
+        String::new()
+    } else {
+        format!(" | {}", state.daily_kline_status)
+    };
+
     let status = format!(
-        " 数据源: {} ({}) | 更新: {}{} | ↑↓选择 s排序 q退出 ",
-        state.source_name, conn_status, update_info, error_info
+        " 数据源: {} ({}) | 更新: {}{}{} | ↑↓选择 s排序 d日线 q退出 ",
+        state.source_name, conn_status, update_info, error_info, daily_info
     );
 
     let bar = Paragraph::new(status)
@@ -380,6 +412,9 @@ pub fn handle_input(state: &mut DashboardState) -> io::Result<bool> {
                 }
                 KeyCode::Char('i') => {
                     state.show_indicators = !state.show_indicators;
+                }
+                KeyCode::Char('d') => {
+                    state.show_daily_signals = !state.show_daily_signals;
                 }
                 _ => {}
             }
