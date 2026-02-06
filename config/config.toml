@@ -1,0 +1,19 @@
+[general]
+log_level = "info"
+
+[data_source]
+source = "openapi"
+refresh_interval_secs = 2
+
+[futu]
+opend_host = "127.0.0.1"
+opend_port = 11111
+
+[alerts]
+enabled = true
+cooldown_secs = 300
+change_threshold_pct = 3.0
+
+[ui]
+page_size = 50
+show_indicators = true

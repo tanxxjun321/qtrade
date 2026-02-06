@@ -1,0 +1,208 @@
+# qtrade 量化交易盯盘系统 - 实施计划
+
+## Context
+
+开发一个量化交易监控程序，直接从 macOS 上运行的富途牛牛 App 获取实时行情数据，用于港股和A股的智能盯盘。不依赖 FutuOpenD 网关，而是通过 macOS 系统级 API（Accessibility API 读取 UI 元素 + Window Capture + Vision OCR 作为后备）从 App 窗口中提取数据。
+
+数据源双通道：
+1. **macOS Accessibility API** — 直接从 App 窗口 UI 元素读取实时行情（无需额外软件）
+2. **FutuOpenD + OpenAPI** — 通过官方网关获取结构化行情数据（更稳定，支持 K 线/订单簿等丰富数据）
+
+技术选型：**Rust** + macOS 底层框架（objc2 生态） + ratatui 终端展示。
+
+### 已验证的本地数据
+
+富途牛牛 App 本地数据基础路径：`~/Library/Containers/cn.futu.Niuniu/Data/Library/Application Support/`
+
+自选股文件路径：`{base_path}/{user_id}/watchstockContainer.dat`
+- `{user_id}` 是富途用户 ID（数字目录），**不是固定值**
+- 当前系统发现多个用户目录：`0`, `27148251`, `35138101`, `542003`
+- 程序需**自动扫描**数字目录，找到含有 `watchstockContainer.dat` 的目录
+- 策略：选择修改时间最新的那个（即最近活跃的账号），或让用户在配置中指定
+- 文件格式：XML plist
+- 价格格式：高精度整数（如 `3875530400000` → 实际价格需除以 10^11）
+- 股票 ID 编码：`1XXXXXX` = 沪市, `2XXXXXX` = 深市, `800XXX` = 港股指数
+
+## 项目结构
+
+```
+qtrade/
+├── Cargo.toml
+├── CLAUDE.md
+├── docs/
+│   └── PLAN.md                     # 本文件
+├── config/
+│   └── config.toml.example
+├── src/
+│   ├── main.rs                     # 入口 + CLI (clap)
+│   ├── config.rs                   # TOML 配置加载
+│   ├── models.rs                   # 共享数据模型
+│   ├── futu/
+│   │   ├── mod.rs
+│   │   ├── watchlist.rs            # 读取 App 本地 plist 自选股列表
+│   │   ├── accessibility.rs        # macOS AXUIElement 读取 App 窗口 UI 元素
+│   │   └── openapi.rs              # FutuOpenD TCP 协议客户端（protobuf）
+│   ├── data/
+│   │   ├── mod.rs
+│   │   ├── provider.rs             # DataProvider trait + 调度（AX / OpenAPI 可切换）
+│   │   └── parser.rs               # 从原始文本/AX值解析为 QuoteSnapshot
+│   ├── analysis/
+│   │   ├── mod.rs
+│   │   ├── engine.rs               # 分析引擎：滚动窗口 + 指标调度
+│   │   ├── indicators.rs           # MA / MACD / RSI 纯计算
+│   │   └── signals.rs              # 信号判定（金叉/死叉、超买超卖）
+│   ├── alerts/
+│   │   ├── mod.rs
+│   │   ├── manager.rs              # 规则评估 + 冷却机制
+│   │   ├── rules.rs                # 涨跌幅、目标价、放量、指标信号规则
+│   │   └── notify.rs               # 通知渠道（终端 + Webhook）
+│   ├── ui/
+│   │   ├── mod.rs
+│   │   └── dashboard.rs            # ratatui 实时终端仪表盘
+│   └── trading/                    # 预留交易模块（第一阶段仅 trait 定义）
+│       ├── mod.rs
+│       └── paper.rs
+└── tests/
+    ├── test_config.rs
+    ├── test_indicators.rs
+    ├── test_parser.rs
+    └── test_watchlist.rs
+```
+
+## 数据流架构
+
+```
+数据源（可切换）：
+
+方案 A: Accessibility API          方案 B: FutuOpenD + OpenAPI
+(accessibility.rs)                 (openapi.rs)
+  │ 读取 App UI 元素文本               │ TCP protobuf 连接 localhost:11111
+  │ 无需额外软件                       │ 支持实时订阅推送、历史K线、订单簿
+  │                                   │
+  └──────────┬────────────────────────┘
+             │
+       DataProvider trait (provider.rs)
+       配置选择：source = "accessibility" | "openapi"
+             │
+       parser.rs → QuoteSnapshot
+             │
+    ┌────────┼────────┐
+    │        │        │
+AlertMgr  Analysis  Dashboard
+(涨跌幅   Engine    (ratatui)
+ 提醒)    (MA/MACD
+           /RSI)
+    ▲        │
+    └────────┘ (指标信号)
+
+watchlist.rs：从 plist 读取自选股列表（两种方案共用）
+```
+
+### 线程模型（tokio async）
+
+- **数据采集任务**：定时（每 1-2 秒）通过 AX API 或 OpenAPI 获取最新行情
+- **分析任务**：收到新数据后计算指标、评估规则
+- **UI 渲染**：主线程运行 ratatui 事件循环，通过 channel 接收数据更新
+- 组件间通信：`tokio::sync::mpsc` channel
+
+## 关键设计决策
+
+| 决策 | 选择 | 理由 |
+|------|------|------|
+| 数据获取方案 A | macOS Accessibility API | 直接读 UI 元素文本，无需额外软件 |
+| 数据获取方案 B | FutuOpenD + OpenAPI (TCP protobuf) | 结构化数据，支持 K 线/订单簿/实时推送 |
+| 自选股来源 | 读 App 本地 plist 文件 | 已验证可行，免配置 |
+| 异步运行时 | tokio | Rust 标准异步运行时 |
+| 终端 UI | ratatui + crossterm | Rust 生态最成熟的 TUI 框架 |
+| 配置格式 | TOML | Rust 原生支持，serde 集成好 |
+| macOS 互操作 | objc2 系列 crate | 当前标准，替代已归档的 icrate |
+
+## 核心依赖 (Cargo.toml)
+
+```toml
+[dependencies]
+objc2 = "0.6"
+objc2-foundation = "0.3"
+objc2-app-kit = "0.3"
+core-foundation = "0.10"
+prost = "0.13"
+prost-types = "0.13"
+tokio-util = { version = "0.7", features = ["codec"] }
+bytes = "1"
+plist = "1"
+serde = { version = "1", features = ["derive"] }
+toml = "0.8"
+tokio = { version = "1", features = ["full"] }
+ratatui = "0.29"
+crossterm = "0.28"
+clap = { version = "4", features = ["derive"] }
+reqwest = { version = "0.12", features = ["json"] }
+tracing = "0.1"
+tracing-subscriber = "0.3"
+chrono = { version = "0.4", features = ["serde"] }
+anyhow = "1"
+sha2 = "0.10"
+
+[build-dependencies]
+prost-build = "0.13"
+```
+
+## 实施步骤
+
+### Step 1: 项目骨架 + plist 自选股读取 ✅
+- `cargo init`，配置 `Cargo.toml`
+- 实现 `config.rs`（TOML 加载）和 `models.rs`（QuoteSnapshot, StockCode 等）
+- 实现 `futu/watchlist.rs`：解析 `watchstockContainer.dat` plist，提取股票代码和缓存价格
+- 验证：运行程序输出当前自选股列表
+
+### Step 2: Accessibility API 数据获取
+- 实现 `futu/accessibility.rs`：
+  - 通过 `AXUIElementCreateApplication` 获取富途 App 进程
+  - 遍历窗口 → 子元素树，定位股票行情表格区域
+  - 读取 AXValue/AXTitle 等属性提取价格文本
+- 实现 `data/parser.rs`：从原始文本解析出股票代码、价格、涨跌幅
+
+### Step 3: FutuOpenD OpenAPI 数据源
+- 实现 `futu/openapi.rs`：
+  - TCP 连接 FutuOpenD (localhost:11111)
+  - Futu 协议帧格式：固定头部 + protobuf body
+  - 实现 InitConnect、GetGlobalState、Sub（订阅行情）、GetBasicQot（获取报价）
+  - 实时推送回调处理
+- 实现 `data/provider.rs`：DataProvider trait
+
+### Step 4: 终端仪表盘
+- 实现 `ui/dashboard.rs`：ratatui 实时表格展示自选股行情
+- 实现 `main.rs` CLI (clap)
+
+### Step 5: 技术指标分析
+- 实现 `analysis/indicators.rs`：MA（多周期）、MACD、RSI 纯计算函数
+- 实现 `analysis/engine.rs`：维护每只股票的价格滚动窗口
+- 实现 `analysis/signals.rs`：金叉/死叉、超买/超卖信号判定
+- 单元测试
+
+### Step 6: 提醒系统
+- 实现 `alerts/rules.rs`：涨跌幅阈值、目标价、指标信号规则
+- 实现 `alerts/manager.rs`：规则评估 + 冷却机制
+- 实现 `alerts/notify.rs`：终端弹窗 + Webhook
+
+### Step 7: 集成 + CLAUDE.md 更新
+- 在 `main.rs` 中完整串联：数据采集 → 分析 → 提醒 → UI
+- 更新 `CLAUDE.md` 和 `config/config.toml.example`
+- 预留 `trading/` trait 定义
+
+## 验证方式
+
+1. **自选股读取**：`cargo run -- watchlist` → 打印从 plist 读取的自选股
+2. **AX 数据获取**：打开富途牛牛 App → `cargo run -- start` → 终端显示实时价格
+3. **OpenAPI 数据源**：启动 FutuOpenD → 配置 `source = "openapi"` → 确认实时推送行情
+4. **指标计算**：`cargo test` → 验证 MA/MACD/RSI 对已知数据的计算结果
+5. **提醒触发**：设置涨跌幅阈值为 0.01% → 确认提醒触发和冷却机制生效
+6. **端到端**：App 运行中 → qtrade 持续监控 → 行情变化时终端实时更新 + 提醒
+
+## 未来扩展方向
+
+- 纸上交易（paper trading）模拟
+- 更多技术指标（布林带、KDJ 等）
+- 多窗口/多账号支持
+- Web 界面（axum + htmx）
+- 策略回测引擎
