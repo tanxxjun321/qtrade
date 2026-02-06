@@ -1,0 +1,37 @@
+# qtrade 配置文件
+# 复制此文件为 config/config.toml 并按需修改
+
+[general]
+# 日志级别: trace, debug, info, warn, error
+log_level = "info"
+
+[data_source]
+# 数据源类型: "accessibility" (macOS AX API) 或 "openapi" (FutuOpenD)
+source = "accessibility"
+# 数据刷新间隔（秒）
+refresh_interval_secs = 2
+
+[futu]
+# 富途牛牛本地数据路径（留空则自动检测）
+# data_path = "/Users/xxx/Library/Containers/cn.futu.Niuniu/Data/Library/Application Support"
+# 指定用户 ID（留空则自动选择最近活跃的）
+# user_id = "27148251"
+# FutuOpenD 连接地址（仅 openapi 模式需要）
+opend_host = "127.0.0.1"
+opend_port = 11111
+
+[alerts]
+# 是否启用提醒
+enabled = true
+# 冷却时间（秒），同一规则在此时间内不重复触发
+cooldown_secs = 300
+# 涨跌幅提醒阈值 (%)
+change_threshold_pct = 3.0
+# Webhook URL（支持飞书/Slack）
+# webhook_url = "https://open.feishu.cn/open-apis/bot/v2/hook/xxx"
+
+[ui]
+# 表格每页显示行数
+page_size = 50
+# 是否显示技术指标列
+show_indicators = true
