@@ -24,6 +24,10 @@ pub struct AppConfig {
     /// UI 配置
     #[serde(default)]
     pub ui: UiConfig,
+
+    /// 分析配置
+    #[serde(default)]
+    pub analysis: AnalysisConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -138,6 +142,39 @@ impl Default for UiConfig {
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AnalysisConfig {
+    /// 是否启用日K线分析
+    #[serde(default = "default_true")]
+    pub daily_kline_enabled: bool,
+
+    /// 日K线获取天数（需 >= 120 以满足 MA60 + MACD 预热）
+    #[serde(default = "default_daily_kline_days")]
+    pub daily_kline_days: u32,
+
+    /// 日K线刷新间隔（分钟），0 表示仅启动时获取
+    #[serde(default = "default_daily_kline_refresh_minutes")]
+    pub daily_kline_refresh_minutes: u64,
+}
+
+impl Default for AnalysisConfig {
+    fn default() -> Self {
+        Self {
+            daily_kline_enabled: true,
+            daily_kline_days: default_daily_kline_days(),
+            daily_kline_refresh_minutes: default_daily_kline_refresh_minutes(),
+        }
+    }
+}
+
+fn default_daily_kline_days() -> u32 {
+    120
+}
+
+fn default_daily_kline_refresh_minutes() -> u64 {
+    30
+}
+
 fn default_log_level() -> String {
     "info".to_string()
 }
@@ -219,6 +256,7 @@ impl Default for AppConfig {
             futu: FutuConfig::default(),
             alerts: AlertsConfig::default(),
             ui: UiConfig::default(),
+            analysis: AnalysisConfig::default(),
         }
     }
 }
