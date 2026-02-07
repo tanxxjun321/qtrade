@@ -115,6 +115,10 @@ pub struct OcrProvider {
     connected: bool,
     /// 上一次窗口尺寸，用于 resize 检测
     last_window_size: Option<(f64, f64)>,
+    /// 上一次截图哈希，用于跳过未变化的帧
+    last_image_hash: String,
+    /// 上一轮有效 quotes 缓存（图像未变化时复用）
+    last_quotes: Vec<QuoteSnapshot>,
     /// 非白名单代码的连续出现计数（连续 >=2 轮视为新增自选股）
     unknown_code_streak: HashMap<StockCode, u32>,
     /// 上一轮有效结果的代码集（用于清理 streak）
@@ -127,6 +131,8 @@ impl OcrProvider {
             futu_pid: None,
             connected: false,
             last_window_size: None,
+            last_image_hash: String::new(),
+            last_quotes: Vec::new(),
             unknown_code_streak: HashMap::new(),
             last_valid_codes: HashSet::new(),
         }
@@ -146,9 +152,18 @@ impl OcrProvider {
             .ok_or_else(|| anyhow::anyhow!("Not connected. Call connect() first."))?;
 
         // CG 截图和 Vision OCR 都是同步 API，放到阻塞线程池
-        let result = tokio::task::spawn_blocking(move || ocr::ocr_capture_and_parse(pid))
+        let prev_hash = self.last_image_hash.clone();
+        let result = tokio::task::spawn_blocking(move || {
+            ocr::ocr_capture_and_parse(pid, &prev_hash)
+        })
             .await
             .map_err(|e| anyhow::anyhow!("spawn_blocking failed: {}", e))??;
+
+        // 图像未变化 → 直接返回缓存
+        self.last_image_hash = result.image_hash;
+        if result.skipped {
+            return Ok(self.last_quotes.clone());
+        }
 
         // Layer 1: 窗口 resize 检测 — 尺寸变化时跳过本轮
         let new_size = (result.window_width, result.window_height);
@@ -190,6 +205,9 @@ impl OcrProvider {
         // 清理不再出现的 streak 计数
         self.unknown_code_streak.retain(|code, _| this_round_codes.contains(code));
         self.last_valid_codes = this_round_codes;
+
+        // 缓存本轮结果（图像未变化时复用）
+        self.last_quotes = accepted.clone();
 
         Ok(accepted)
     }
