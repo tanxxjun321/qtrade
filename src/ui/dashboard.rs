@@ -13,7 +13,7 @@ use ratatui::prelude::*;
 use ratatui::widgets::*;
 
 use crate::models::{
-    AlertEvent, AlertSeverity, QuoteSnapshot, Signal, StockCode,
+    AlertEvent, AlertSeverity, Market, QuoteSnapshot, Signal, StockCode,
     TechnicalIndicators, TimedSignal,
 };
 
@@ -249,7 +249,18 @@ fn render_quote_table(frame: &mut Frame, area: Rect, state: &DashboardState) {
 
             let signals = signal_parts.join("  ");
 
-            let price_str = format!("{:.2}", q.last_price);
+            // 美股非盘中时段，灰色小字（extended_price）才是实价
+            let display_price = if q.code.market == Market::US {
+                let session = crate::models::us_market_session();
+                if session != crate::models::UsMarketSession::Regular {
+                    q.extended_price.unwrap_or(q.last_price)
+                } else {
+                    q.last_price
+                }
+            } else {
+                q.last_price
+            };
+            let price_str = format!("{:.2}", display_price);
 
             // Cell 只设 fg，不设 bg — bg 由 Row style 统一控制
             let cells = vec![
