@@ -865,6 +865,8 @@ fn parse_basic_qot_list(s2c: Option<&pb_basic_qot::S2C>) -> Vec<QuoteSnapshot> {
                 change_pct,
                 turnover_rate: qot.turnover_rate.unwrap_or(0.0),
                 amplitude: qot.amplitude.unwrap_or(0.0),
+                extended_price: None,
+                extended_change_pct: None,
                 timestamp: chrono::Local::now(),
                 source: DataSource::OpenApi,
             }
@@ -908,6 +910,8 @@ fn parse_basic_qot_json(resp: &serde_json::Value) -> Vec<QuoteSnapshot> {
                 change_pct,
                 turnover_rate: qot.get("turnoverRate").and_then(|v| v.as_f64()).unwrap_or(0.0),
                 amplitude: qot.get("amplitude").and_then(|v| v.as_f64()).unwrap_or(0.0),
+                extended_price: None,
+                extended_change_pct: None,
                 timestamp: chrono::Local::now(),
                 source: DataSource::OpenApi,
             })

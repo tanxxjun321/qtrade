@@ -45,6 +45,8 @@ enum Commands {
     Debug,
     /// 测试 FutuOpenD 连接并获取行情
     TestApi,
+    /// 测试窗口截图 + Vision OCR 识别效果
+    TestOcr,
 }
 
 #[tokio::main]
@@ -83,6 +85,7 @@ async fn main() -> Result<()> {
         Commands::Watchlist => cmd_watchlist(config),
         Commands::Debug => cmd_debug(config),
         Commands::TestApi => cmd_test_api(config).await,
+        Commands::TestOcr => cmd_test_ocr(config).await,
     }
 }
 
@@ -189,18 +192,14 @@ async fn cmd_start(config: AppConfig) -> Result<()> {
         }
     }
 
-    // 获取已订阅市场，用于过滤K线请求
-    let subscribed_markets = provider.subscribed_markets();
-
     // 创建日线分析引擎，加载缓存
     let daily_engine = Arc::new(Mutex::new(DailyAnalysisEngine::new()));
-    let cache_last_updated = {
+    {
         let mut de = daily_engine.lock().await;
-        let last = de.load_cache();
+        de.load_cache();
         if de.stock_count() > 0 {
             info!("Loaded daily kline cache: {} stocks", de.stock_count());
         }
-        last
     };
 
     // 创建分析引擎
@@ -296,19 +295,10 @@ async fn cmd_start(config: AppConfig) -> Result<()> {
         let futu_port = config.futu.opend_port;
         let daily_days = config.analysis.daily_kline_days;
         let refresh_mins = config.analysis.daily_kline_refresh_minutes;
-        let cached_date = cache_last_updated.clone();
 
-        // 只拉取已订阅市场的股票
-        let daily_codes: Vec<StockCode> = stock_codes
-            .iter()
-            .filter(|s| subscribed_markets.contains(&s.market))
-            .cloned()
-            .collect();
-        info!(
-            "Daily K-line target: {} stocks (subscribed markets: {:?})",
-            daily_codes.len(),
-            subscribed_markets
-        );
+        // 日K线通过独立连接拉取，不依赖实时行情的订阅状态
+        let daily_codes = stock_codes.clone();
+        info!("Daily K-line target: {} stocks", daily_codes.len());
 
         Some(tokio::spawn(async move {
             let mut first = true;
@@ -320,28 +310,13 @@ async fn cmd_start(config: AppConfig) -> Result<()> {
                     tokio::time::sleep(Duration::from_secs(refresh_mins * 60)).await;
                 }
 
-                // 判断全量还是增量
-                let need_full = if first {
-                    match &cached_date {
-                        Some(d) => {
-                            crate::analysis::daily::cache_needs_full_refresh(d, 3)
-                        }
-                        None => true,
-                    }
-                } else {
-                    false // 运行中刷新始终增量
-                };
                 first = false;
-
-                let fetch_days: u32 = if need_full { daily_days } else { 5 };
-                let mode = if need_full { "全量" } else { "增量" };
                 let total = daily_codes.len();
 
-                info!("Fetching daily K-line data ({}，{}天，{}只)...", mode, fetch_days, total);
+                info!("Fetching daily K-line data ({}只)...", total);
                 {
                     let mut state = dash_for_daily.lock().await;
-                    state.daily_kline_status =
-                        format!("日K{}中(0/{})", mode, total);
+                    state.daily_kline_status = format!("日K拉取中(0/{})", total);
                 }
 
                 // 创建独立连接
@@ -349,34 +324,94 @@ async fn cmd_start(config: AppConfig) -> Result<()> {
                     crate::futu::openapi::OpenApiClient::new(&futu_host, futu_port);
                 match client.connect().await {
                     Ok(()) => {
-                        let end = chrono::Local::now().format("%Y-%m-%d").to_string();
-                        let begin = (chrono::Local::now()
-                            - chrono::Duration::days(fetch_days as i64 * 2))
-                            .format("%Y-%m-%d")
-                            .to_string();
-
-                        // 逐只拉取，即时合并
+                        // 逐只拉取，每只独立判断拉取天数，拉取后验证连续性
+                        let mut no_permission_markets: std::collections::HashSet<crate::models::Market> =
+                            std::collections::HashSet::new();
                         let mut fetched = 0u32;
+                        let today_str = chrono::Local::now().format("%Y-%m-%d").to_string();
                         for (i, stock) in daily_codes.iter().enumerate() {
+                            if no_permission_markets.contains(&stock.market) {
+                                continue;
+                            }
+
+                            // 今天已拉取过 → 跳过
+                            {
+                                let de = daily_engine_clone.lock().await;
+                                if de.last_fetched_date(stock) == Some(today_str.as_str()) {
+                                    continue;
+                                }
+                            }
+
+                            // 确定拉取天数：无缓存→全量，有缓存→gap+5 自适应
+                            let (fetch_days, last_date) = {
+                                let de = daily_engine_clone.lock().await;
+                                match de.last_kline_date(stock) {
+                                    Some(ld) => {
+                                        let gap = date_gap_days(&ld, &today_str);
+                                        let days = (gap + 5).max(5).min(daily_days);
+                                        (days, Some(ld))
+                                    }
+                                    None => (daily_days, None),
+                                }
+                            };
+
+                            let end = today_str.clone();
+                            let begin = (chrono::Local::now()
+                                - chrono::Duration::days(fetch_days as i64 * 2))
+                                .format("%Y-%m-%d")
+                                .to_string();
+
                             match client
                                 .request_history_kline(stock, &begin, &end, fetch_days)
                                 .await
                             {
                                 Ok(klines) => {
-                                    if !klines.is_empty() {
+                                    if klines.is_empty() {
+                                        continue;
+                                    }
+                                    // 验证连续性：缓存尾部日期必须出现在新数据中
+                                    let mut de = daily_engine_clone.lock().await;
+                                    if let Some(ref ld) = last_date {
+                                        let has_overlap = klines.iter().any(|k| &k.date == ld);
+                                        if has_overlap {
+                                            let mut data = std::collections::HashMap::new();
+                                            data.insert(stock.clone(), klines);
+                                            de.merge_update(data);
+                                        } else {
+                                            warn!(
+                                                "{}: cache discontinuous (last_date={}, fetched {}~{}), replacing",
+                                                stock.display_code(), ld,
+                                                klines.first().map(|k| k.date.as_str()).unwrap_or("?"),
+                                                klines.last().map(|k| k.date.as_str()).unwrap_or("?"),
+                                            );
+                                            de.replace_stock(stock.clone(), klines);
+                                        }
+                                    } else {
                                         let mut data = std::collections::HashMap::new();
                                         data.insert(stock.clone(), klines);
-                                        let mut de = daily_engine_clone.lock().await;
                                         de.merge_update(data);
-                                        fetched += 1;
                                     }
+                                    de.mark_fetched(stock, &today_str);
+                                    fetched += 1;
                                 }
                                 Err(e) => {
-                                    warn!(
-                                        "Failed to get klines for {}: {}",
-                                        stock.display_code(),
-                                        e
-                                    );
+                                    let msg = format!("{}", e);
+                                    let is_permission = msg.contains("permission")
+                                        || msg.contains("未开通")
+                                        || msg.contains("no quota")
+                                        || msg.contains("not available");
+                                    if is_permission {
+                                        warn!(
+                                            "{} market no permission, skipping: {}",
+                                            stock.market, msg
+                                        );
+                                        no_permission_markets.insert(stock.market);
+                                    } else {
+                                        warn!(
+                                            "Failed to get klines for {}: {}",
+                                            stock.display_code(), msg
+                                        );
+                                    }
                                 }
                             }
 
@@ -384,7 +419,7 @@ async fn cmd_start(config: AppConfig) -> Result<()> {
                             {
                                 let mut state = dash_for_daily.lock().await;
                                 state.daily_kline_status =
-                                    format!("日K{}中({}/{})", mode, i + 1, total);
+                                    format!("日K拉取中({}/{})", i + 1, total);
                             }
 
                             // 每 10 只存盘一次 + 同步 dashboard
@@ -413,8 +448,8 @@ async fn cmd_start(config: AppConfig) -> Result<()> {
                             state.daily_kline_status =
                                 format!("日K:{}只 信号:{}", de.stock_count(), sig_count);
                             info!(
-                                "Daily K-line {} complete: fetched {}, total {}, {} signals",
-                                mode, fetched, de.stock_count(), sig_count
+                                "Daily K-line complete: fetched {}, total {}, {} signals",
+                                fetched, de.stock_count(), sig_count
                             );
                         }
 
@@ -589,4 +624,156 @@ async fn cmd_test_api(config: AppConfig) -> Result<()> {
     println!("\n✓ 连接已断开");
 
     Ok(())
+}
+
+/// 测试窗口截图 + Vision OCR
+async fn cmd_test_ocr(_config: AppConfig) -> Result<()> {
+    use crate::futu::accessibility::AccessibilityReader;
+    use crate::futu::ocr;
+
+    println!("测试窗口截图 + Vision OCR...\n");
+
+    // 0. 检查屏幕录制权限
+    if !ocr::check_screen_capture_permission() {
+        println!("⚠ 屏幕录制权限未授权，正在请求...");
+        if !ocr::request_screen_capture_permission() {
+            anyhow::bail!(
+                "屏幕录制权限未授权。\n\
+                 请前往 系统设置 → 隐私与安全性 → 屏幕录制 中授权当前终端 App，然后重试"
+            );
+        }
+    }
+    println!("✓ 屏幕录制权限已授权");
+
+    // 1. 查找富途进程
+    println!("查找富途牛牛进程...");
+    let pid = AccessibilityReader::find_futu_pid()?;
+    println!("  PID: {}", pid);
+
+    // 2. 查找窗口
+    println!("\n查找主窗口...");
+    let window_id = ocr::find_futu_window_id(pid)?;
+    println!("  窗口 ID: {}", window_id);
+
+    // 3. 截图
+    println!("\n截取窗口截图...");
+    let image = ocr::capture_window(window_id)?;
+    println!(
+        "  截图尺寸: {}x{} 像素",
+        objc2_core_graphics::CGImage::width(Some(&image)),
+        objc2_core_graphics::CGImage::height(Some(&image)),
+    );
+
+    // 4. Pass 1: 快速 OCR → 检测布局
+    println!("\n[Pass 1] 快速 OCR 检测布局...");
+    let t0 = std::time::Instant::now();
+    let fast_blocks = ocr::recognize_text_fast(&image)?;
+    let fast_ms = t0.elapsed().as_millis();
+    println!("  Fast OCR: {} 个文字块 ({} ms)", fast_blocks.len(), fast_ms);
+
+    let layout = ocr::detect_layout(&fast_blocks);
+    println!(
+        "  自选股区域: x = {:.1}% ~ {:.1}%",
+        layout.watchlist_x.0 * 100.0,
+        layout.watchlist_x.1 * 100.0
+    );
+    if let Some((ql, qr)) = layout.quote_x {
+        println!(
+            "  报价详情区域: x = {:.1}% ~ {:.1}%",
+            ql * 100.0,
+            qr * 100.0
+        );
+    } else {
+        println!("  报价详情区域: 未检测到");
+    }
+
+    // 5. Pass 2: 裁剪 → 精确 OCR
+    println!("\n[Pass 2] 裁剪自选股区域 → 精确 OCR...");
+    let watchlist_crop = ocr::crop_image(&image, layout.watchlist_x)?;
+    println!(
+        "  裁剪尺寸: {}x{}",
+        objc2_core_graphics::CGImage::width(Some(&watchlist_crop)),
+        objc2_core_graphics::CGImage::height(Some(&watchlist_crop)),
+    );
+
+    let t1 = std::time::Instant::now();
+    let blocks = ocr::recognize_text(&watchlist_crop)?;
+    let acc_ms = t1.elapsed().as_millis();
+    println!("  Accurate OCR: {} 个文字块 ({} ms)", blocks.len(), acc_ms);
+
+    // 6. 分行
+    println!("\n--- 行分组结果 ---");
+    let rows = ocr::group_into_rows(&blocks);
+    println!("  共 {} 行", rows.len());
+    for (i, row) in rows.iter().enumerate() {
+        let line: String = row.iter().map(|b| b.text.as_str()).collect::<Vec<_>>().join(" | ");
+        println!("  行{:2}: {}", i, line);
+    }
+
+    // 7. 解析自选股行情
+    println!("\n--- 自选股行情 ---");
+    let quotes = ocr::parse_watchlist_from_ocr(&rows);
+    let session = crate::models::us_market_session();
+    let session_label = session.extended_label();
+    for q in &quotes {
+        let ext_info = match (q.extended_price, q.extended_change_pct) {
+            (Some(ep), Some(epc)) => format!("  {}:{:.3} {:>+.2}%", session_label, ep, epc),
+            (Some(ep), None) => format!("  {}:{:.3}", session_label, ep),
+            _ => String::new(),
+        };
+        println!(
+            "  {} {:<12} {:>10.3}  {:>+8.3}  {:>+7.2}%{}",
+            q.code.display_code(),
+            q.name,
+            q.last_price,
+            q.change,
+            q.change_pct,
+            ext_info,
+        );
+    }
+
+    // 8. 裁剪报价详情区域
+    if let Some(quote_range) = layout.quote_x {
+        println!("\n[Pass 2] 裁剪报价详情区域 → 精确 OCR...");
+        let quote_crop = ocr::crop_image(&image, quote_range)?;
+        println!(
+            "  裁剪尺寸: {}x{}",
+            objc2_core_graphics::CGImage::width(Some(&quote_crop)),
+            objc2_core_graphics::CGImage::height(Some(&quote_crop)),
+        );
+
+        let t2 = std::time::Instant::now();
+        let quote_blocks = ocr::recognize_text(&quote_crop)?;
+        let q_ms = t2.elapsed().as_millis();
+        println!("  Accurate OCR: {} 个文字块 ({} ms)", quote_blocks.len(), q_ms);
+
+        let quote_rows = ocr::group_into_rows(&quote_blocks);
+        println!("\n--- 报价详情 ---");
+        for (i, row) in quote_rows.iter().enumerate() {
+            let line: String = row.iter().map(|b| b.text.as_str()).collect::<Vec<_>>().join(" | ");
+            println!("  行{:2}: {}", i, line);
+        }
+    }
+
+    println!(
+        "\n共解析 {} 条行情 (Fast {}ms + Accurate {}ms)",
+        quotes.len(),
+        fast_ms,
+        acc_ms
+    );
+
+    Ok(())
+}
+
+/// 计算两个日期字符串之间的自然日间隔（"YYYY-MM-DD" 格式）
+fn date_gap_days(from: &str, to: &str) -> u32 {
+    let from_date = match chrono::NaiveDate::parse_from_str(from, "%Y-%m-%d") {
+        Ok(d) => d,
+        Err(_) => return u32::MAX, // 解析失败视为需要全量
+    };
+    let to_date = match chrono::NaiveDate::parse_from_str(to, "%Y-%m-%d") {
+        Ok(d) => d,
+        Err(_) => return u32::MAX,
+    };
+    (to_date - from_date).num_days().max(0) as u32
 }

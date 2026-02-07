@@ -13,7 +13,7 @@ use ratatui::prelude::*;
 use ratatui::widgets::*;
 
 use crate::models::{
-    AlertEvent, AlertSeverity, QuoteSnapshot, Signal, StockCode,
+    AlertEvent, AlertSeverity, Market, QuoteSnapshot, Signal, StockCode,
     TechnicalIndicators, TimedSignal,
 };
 
@@ -219,12 +219,26 @@ fn render_quote_table(frame: &mut Frame, area: Rect, state: &DashboardState) {
         .map(|(i, q)| {
             let selected = i == state.selected_row;
 
-            let change_color = if q.change_pct > 0.0 {
-                if selected { Color::LightRed } else { Color::Red }
-            } else if q.change_pct < 0.0 {
-                if selected { Color::LightGreen } else { Color::Green }
+            // 美股非盘中时段：灰色小字(extended_price)才是实价，涨跌相对收盘价重算
+            let use_extended = q.code.market == Market::US
+                && crate::models::us_market_session() != crate::models::UsMarketSession::Regular
+                && q.extended_price.is_some();
+
+            let (display_price, display_change, display_change_pct) = if use_extended {
+                let ext = q.extended_price.unwrap();
+                let chg = ext - q.last_price;
+                let pct = if q.last_price > 0.0 { chg / q.last_price * 100.0 } else { 0.0 };
+                (ext, chg, pct)
             } else {
-                if selected { Color::White } else { Color::White }
+                (q.last_price, q.change, q.change_pct)
+            };
+
+            let change_color = match (display_change_pct > 0.0, display_change_pct < 0.0, selected) {
+                (true, _, true) => Color::LightRed,
+                (true, _, false) => Color::Red,
+                (_, true, true) => Color::LightGreen,
+                (_, true, false) => Color::Green,
+                _ => Color::White,
             };
 
             let signal_color = if selected { Color::LightMagenta } else { Color::Magenta };
@@ -249,15 +263,17 @@ fn render_quote_table(frame: &mut Frame, area: Rect, state: &DashboardState) {
 
             let signals = signal_parts.join("  ");
 
+            let price_str = format!("{:.2}", display_price);
+
             // Cell 只设 fg，不设 bg — bg 由 Row style 统一控制
             let cells = vec![
                 Cell::from(q.code.display_code()),
                 Cell::from(q.name.clone()),
-                Cell::from(format!("{:.2}", q.last_price))
+                Cell::from(price_str)
                     .style(Style::new().fg(change_color)),
-                Cell::from(format!("{:+.2}%", q.change_pct))
+                Cell::from(format!("{:+.2}%", display_change_pct))
                     .style(Style::new().fg(change_color)),
-                Cell::from(format!("{:+.2}", q.change))
+                Cell::from(format!("{:+.2}", display_change))
                     .style(Style::new().fg(change_color)),
                 Cell::from(format_volume(q.volume)),
                 Cell::from(format!("{:.2}", q.turnover_rate)),
