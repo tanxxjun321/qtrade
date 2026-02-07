@@ -219,10 +219,12 @@ fn render_quote_table(frame: &mut Frame, area: Rect, state: &DashboardState) {
         .map(|(i, q)| {
             let selected = i == state.selected_row;
 
-            // 美股非盘中时段：灰色小字(extended_price)才是实价，涨跌相对收盘价重算
+            // 美股非盘中时段：extended_price 才是实价，涨跌相对收盘价重算
+            // 但盘前/盘后价格与收盘价相同（无盘前变动）时回退到显示收盘涨跌
             let use_extended = q.code.market == Market::US
                 && crate::models::us_market_session() != crate::models::UsMarketSession::Regular
-                && q.extended_price.is_some();
+                && q.extended_price.is_some()
+                && (q.extended_price.unwrap() - q.last_price).abs() > 0.001;
 
             let (display_price, display_change, display_change_pct) = if use_extended {
                 let ext = q.extended_price.unwrap();
@@ -238,7 +240,8 @@ fn render_quote_table(frame: &mut Frame, area: Rect, state: &DashboardState) {
                 (true, _, false) => Color::Red,
                 (_, true, true) => Color::LightGreen,
                 (_, true, false) => Color::Green,
-                _ => Color::White,
+                (_, _, true) => Color::White,
+                _ => Color::Reset,
             };
 
             let signal_color = if selected { Color::LightMagenta } else { Color::Magenta };
@@ -263,23 +266,46 @@ fn render_quote_table(frame: &mut Frame, area: Rect, state: &DashboardState) {
 
             let signals = signal_parts.join("  ");
 
-            let price_str = format!("{:.2}", display_price);
+            // 仅有 plist 缓存数据（未被 OCR/API 更新过）→ 灰色 "-" 代替虚假的 0%
+            let is_stale = q.source == crate::models::DataSource::Cache;
+            let price_str = if is_stale && q.last_price > 0.0 {
+                format!("{:.2}", q.last_price)
+            } else if is_stale {
+                "-".to_string()
+            } else {
+                format!("{:.2}", display_price)
+            };
+            let stale_color = Color::DarkGray;
 
             // Cell 只设 fg，不设 bg — bg 由 Row style 统一控制
-            let cells = vec![
-                Cell::from(q.code.display_code()),
-                Cell::from(q.name.clone()),
-                Cell::from(price_str)
-                    .style(Style::new().fg(change_color)),
-                Cell::from(format!("{:+.2}%", display_change_pct))
-                    .style(Style::new().fg(change_color)),
-                Cell::from(format!("{:+.2}", display_change))
-                    .style(Style::new().fg(change_color)),
-                Cell::from(format_volume(q.volume)),
-                Cell::from(format!("{:.2}", q.turnover_rate)),
-                Cell::from(format!("{:.2}", q.amplitude)),
-                Cell::from(signals).style(Style::new().fg(signal_color)),
-            ];
+            let cells = if is_stale {
+                vec![
+                    Cell::from(q.code.display_code()),
+                    Cell::from(q.name.clone()),
+                    Cell::from(price_str).style(Style::new().fg(stale_color)),
+                    Cell::from("-").style(Style::new().fg(stale_color)),
+                    Cell::from("-").style(Style::new().fg(stale_color)),
+                    Cell::from("-").style(Style::new().fg(stale_color)),
+                    Cell::from("-").style(Style::new().fg(stale_color)),
+                    Cell::from("-").style(Style::new().fg(stale_color)),
+                    Cell::from(signals).style(Style::new().fg(signal_color)),
+                ]
+            } else {
+                vec![
+                    Cell::from(q.code.display_code()),
+                    Cell::from(q.name.clone()),
+                    Cell::from(price_str)
+                        .style(Style::new().fg(change_color)),
+                    Cell::from(format!("{:+.2}%", display_change_pct))
+                        .style(Style::new().fg(change_color)),
+                    Cell::from(format!("{:+.2}", display_change))
+                        .style(Style::new().fg(change_color)),
+                    Cell::from(format_volume(q.volume)),
+                    Cell::from(format!("{:.2}", q.turnover_rate)),
+                    Cell::from(format!("{:.2}", q.amplitude)),
+                    Cell::from(signals).style(Style::new().fg(signal_color)),
+                ]
+            };
 
             let row_style = if selected {
                 Style::default().bg(Color::DarkGray).fg(Color::White)

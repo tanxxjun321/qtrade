@@ -147,23 +147,28 @@ pub fn parse_stock_code(s: &str) -> Option<StockCode> {
         if let Some(m) = market {
             if !code.is_empty()
                 && (code.chars().all(|c| c.is_ascii_digit())
-                    || (m == Market::US && code.chars().all(|c| c.is_ascii_uppercase())))
+                    || (m == Market::US && code.chars().all(|c| c.is_ascii_alphabetic())))
             {
-                return Some(StockCode::new(m, code));
+                // OCR 可能输出混合大小写，US ticker 统一转大写
+                let normalized = if m == Market::US { code.to_ascii_uppercase() } else { code.to_string() };
+                return Some(StockCode::new(m, &normalized));
             }
         }
     }
 
-    // 美股字母代码：1-5 个大写字母（可带前导/尾随点号，如 .DJI, NVDA.）
+    // 美股字母代码：1-5 个字母（可带前导/尾随点号，如 .DJI, NVDA.）
+    // OCR 可能输出混合大小写（如 "Li" → "LI"），统一转大写
     // 排除市场前缀 HK/SH/SZ/US，这些是市场标识不是股票代码
     {
         let stripped = s.trim_matches('.');
         if !stripped.is_empty()
             && stripped.len() <= 5
-            && stripped.chars().all(|c| c.is_ascii_uppercase())
-            && !matches!(stripped, "HK" | "SH" | "SZ" | "US")
+            && stripped.chars().all(|c| c.is_ascii_alphabetic())
         {
-            return Some(StockCode::new(Market::US, stripped));
+            let upper = stripped.to_ascii_uppercase();
+            if !matches!(upper.as_str(), "HK" | "SH" | "SZ" | "US") {
+                return Some(StockCode::new(Market::US, &upper));
+            }
         }
     }
 

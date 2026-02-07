@@ -514,7 +514,8 @@ pub fn parse_watchlist_from_ocr(rows: &[Vec<&OcrTextBlock>]) -> Vec<QuoteSnapsho
             // 尝试解析为价格（正数）
             // 兼容 OCR 尾部噪声点号 "1.190." → 1.190
             // 过滤 sidebar 噪声小整数（"6"/"14"/"20"等）：小于 100 的价格必须含小数点
-            if row_price.is_none() {
+            // 排除 "+1.105" 等涨跌额（带 + 前缀的是变动值，不是价格）
+            if row_price.is_none() && !text.starts_with('+') {
                 let price_text = text.trim_end_matches('.');
                 if let Ok(p) = price_text.parse::<f64>() {
                     if p > 0.0 && (p >= 100.0 || price_text.contains('.')) {

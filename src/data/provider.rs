@@ -234,6 +234,7 @@ impl OcrProvider {
         let whitelist = self.load_whitelist();
         let mut accepted = Vec::new();
         let mut this_round_codes = HashSet::new();
+        let ocr_total = result.quotes.len();
 
         for q in result.quotes {
             this_round_codes.insert(q.code.clone());
@@ -253,8 +254,16 @@ impl OcrProvider {
         }
 
         // 清理不再出现的 streak 计数
+        let filtered_count = ocr_total - accepted.len();
         self.unknown_code_streak.retain(|code, _| this_round_codes.contains(code));
         self.last_valid_codes = this_round_codes;
+
+        if filtered_count > 0 {
+            info!(
+                "Whitelist: {} accepted, {} filtered (of {} OCR)",
+                accepted.len(), filtered_count, ocr_total
+            );
+        }
 
         // 缓存本轮结果（图像未变化时复用）
         self.last_quotes = accepted.clone();
