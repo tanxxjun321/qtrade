@@ -13,7 +13,7 @@ use ratatui::prelude::*;
 use ratatui::widgets::*;
 
 use crate::models::{
-    AlertEvent, AlertSeverity, Market, QuoteSnapshot, Signal, StockCode,
+    AlertEvent, AlertSeverity, QuoteSnapshot, Signal, StockCode,
     TechnicalIndicators, TimedSignal,
 };
 
@@ -249,17 +249,7 @@ fn render_quote_table(frame: &mut Frame, area: Rect, state: &DashboardState) {
 
             let signals = signal_parts.join("  ");
 
-            // 美股盘前/盘后价格显示
-            let price_str = if q.code.market == Market::US {
-                if let Some(ext) = q.extended_price {
-                    let session = crate::models::us_market_session();
-                    format!("{:.2} {}:{:.2}", q.last_price, session.extended_label(), ext)
-                } else {
-                    format!("{:.2}", q.last_price)
-                }
-            } else {
-                format!("{:.2}", q.last_price)
-            };
+            let price_str = format!("{:.2}", q.last_price);
 
             // Cell 只设 fg，不设 bg — bg 由 Row style 统一控制
             let cells = vec![
@@ -290,7 +280,7 @@ fn render_quote_table(frame: &mut Frame, area: Rect, state: &DashboardState) {
     let widths = [
         Constraint::Length(12),
         Constraint::Length(10),
-        Constraint::Length(20), // 加宽：美股含 "盘前:xxx.xx"
+        Constraint::Length(10),
         Constraint::Length(9),
         Constraint::Length(9),
         Constraint::Length(10),
