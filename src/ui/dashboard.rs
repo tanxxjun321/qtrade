@@ -219,9 +219,33 @@ fn render_quote_table(frame: &mut Frame, area: Rect, state: &DashboardState) {
         .map(|(i, q)| {
             let selected = i == state.selected_row;
 
-            let change_color = if q.change_pct > 0.0 {
+            // 美股非盘中时段，灰色小字（extended_price）才是实价
+            // 涨跌额/幅按实价重新计算（扩展时段相对收盘价）
+            let (display_price, display_change, display_change_pct) =
+                if q.code.market == Market::US {
+                    let session = crate::models::us_market_session();
+                    if session != crate::models::UsMarketSession::Regular {
+                        if let Some(ext) = q.extended_price {
+                            let chg = ext - q.last_price;
+                            let pct = if q.last_price > 0.0 {
+                                chg / q.last_price * 100.0
+                            } else {
+                                q.extended_change_pct.unwrap_or(0.0)
+                            };
+                            (ext, chg, pct)
+                        } else {
+                            (q.last_price, q.change, q.change_pct)
+                        }
+                    } else {
+                        (q.last_price, q.change, q.change_pct)
+                    }
+                } else {
+                    (q.last_price, q.change, q.change_pct)
+                };
+
+            let change_color = if display_change_pct > 0.0 {
                 if selected { Color::LightRed } else { Color::Red }
-            } else if q.change_pct < 0.0 {
+            } else if display_change_pct < 0.0 {
                 if selected { Color::LightGreen } else { Color::Green }
             } else {
                 if selected { Color::White } else { Color::White }
@@ -249,17 +273,6 @@ fn render_quote_table(frame: &mut Frame, area: Rect, state: &DashboardState) {
 
             let signals = signal_parts.join("  ");
 
-            // 美股非盘中时段，灰色小字（extended_price）才是实价
-            let display_price = if q.code.market == Market::US {
-                let session = crate::models::us_market_session();
-                if session != crate::models::UsMarketSession::Regular {
-                    q.extended_price.unwrap_or(q.last_price)
-                } else {
-                    q.last_price
-                }
-            } else {
-                q.last_price
-            };
             let price_str = format!("{:.2}", display_price);
 
             // Cell 只设 fg，不设 bg — bg 由 Row style 统一控制
@@ -268,9 +281,9 @@ fn render_quote_table(frame: &mut Frame, area: Rect, state: &DashboardState) {
                 Cell::from(q.name.clone()),
                 Cell::from(price_str)
                     .style(Style::new().fg(change_color)),
-                Cell::from(format!("{:+.2}%", q.change_pct))
+                Cell::from(format!("{:+.2}%", display_change_pct))
                     .style(Style::new().fg(change_color)),
-                Cell::from(format!("{:+.2}", q.change))
+                Cell::from(format!("{:+.2}", display_change))
                     .style(Style::new().fg(change_color)),
                 Cell::from(format_volume(q.volume)),
                 Cell::from(format!("{:.2}", q.turnover_rate)),
