@@ -192,9 +192,6 @@ async fn cmd_start(config: AppConfig) -> Result<()> {
         }
     }
 
-    // 获取已订阅市场，用于过滤K线请求
-    let subscribed_markets = provider.subscribed_markets();
-
     // 创建日线分析引擎，加载缓存
     let daily_engine = Arc::new(Mutex::new(DailyAnalysisEngine::new()));
     let cache_last_updated = {
@@ -301,17 +298,9 @@ async fn cmd_start(config: AppConfig) -> Result<()> {
         let refresh_mins = config.analysis.daily_kline_refresh_minutes;
         let cached_date = cache_last_updated.clone();
 
-        // 只拉取已订阅市场的股票
-        let daily_codes: Vec<StockCode> = stock_codes
-            .iter()
-            .filter(|s| subscribed_markets.contains(&s.market))
-            .cloned()
-            .collect();
-        info!(
-            "Daily K-line target: {} stocks (subscribed markets: {:?})",
-            daily_codes.len(),
-            subscribed_markets
-        );
+        // 日K线通过独立连接拉取，不依赖实时行情的订阅状态
+        let daily_codes = stock_codes.clone();
+        info!("Daily K-line target: {} stocks", daily_codes.len());
 
         Some(tokio::spawn(async move {
             let mut first = true;
