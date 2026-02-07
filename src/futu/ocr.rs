@@ -660,18 +660,60 @@ fn ocr_parse_market_name(s: &str) -> Option<(Market, String)> {
     None
 }
 
-/// OCR 结果（含窗口尺寸，供调用方做 resize 检测）
+/// OCR 结果（含窗口尺寸和图像哈希，供调用方做 resize/去重检测）
 pub struct OcrResult {
     pub quotes: Vec<QuoteSnapshot>,
     pub window_width: f64,
     pub window_height: f64,
+    /// 截图 SHA1 哈希（hex），用于跳过未变化的帧
+    pub image_hash: String,
+    /// 是否因图像未变化而跳过了 OCR（复用上一轮结果）
+    pub skipped: bool,
 }
 
-/// 完整的 OCR 数据管线：找窗口 → 截图 → OCR → 分行 → 解析
+/// 计算 CGImage 的 SHA1 哈希（采样像素，避免全量读取大图）
+fn compute_image_hash(image: &CGImage) -> String {
+    use sha1::{Digest, Sha1};
+
+    let w = CGImage::width(Some(image));
+    let h = CGImage::height(Some(image));
+    let bpr = CGImage::bytes_per_row(Some(image));
+
+    // 获取像素数据
+    let data_provider = CGImage::data_provider(Some(image));
+    let cf_data = data_provider.and_then(|dp| {
+        objc2_core_graphics::CGDataProviderCopyData(Some(&dp))
+    });
+
+    let mut hasher = Sha1::new();
+    // 图像尺寸也参与哈希
+    hasher.update(w.to_le_bytes());
+    hasher.update(h.to_le_bytes());
+
+    if let Some(ref data) = cf_data {
+        let len = objc2_core_foundation::CFData::length(data) as usize;
+        let ptr = objc2_core_foundation::CFData::byte_ptr(data);
+        let bytes = unsafe { std::slice::from_raw_parts(ptr, len) };
+
+        // 每隔 N 行采样一行，加速哈希
+        let step = (h / 32).max(1);
+        for row in (0..h).step_by(step) {
+            let start = row * bpr;
+            let end = (start + bpr).min(len);
+            if start < len {
+                hasher.update(&bytes[start..end]);
+            }
+        }
+    }
+
+    format!("{:x}", hasher.finalize())
+}
+
+/// 完整的 OCR 数据管线：找窗口 → 截图 → 哈希比对 → OCR → 分行 → 解析
 ///
-/// 支持重试：截图失败时等待短暂间隔后重新查找窗口 ID 并重试，
-/// 以应对窗口调整大小或 compositor 过渡状态导致的瞬间失败。
-pub fn ocr_capture_and_parse(pid: i32) -> Result<OcrResult> {
+/// 如果 `prev_hash` 不为空且与当前截图哈希相同，跳过 OCR 返回空 quotes + skipped=true。
+/// 调用方应在 skipped=true 时复用上一轮结果。
+pub fn ocr_capture_and_parse(pid: i32, prev_hash: &str) -> Result<OcrResult> {
     const MAX_RETRIES: u32 = 2;
     const RETRY_DELAY_MS: u64 = 200;
 
@@ -705,6 +747,19 @@ pub fn ocr_capture_and_parse(pid: i32) -> Result<OcrResult> {
             }
         };
 
+        // 计算图像哈希，与上一轮比对
+        let hash = compute_image_hash(&image);
+        if !prev_hash.is_empty() && hash == prev_hash {
+            debug!("Image unchanged (hash={}), skipping OCR", &hash[..8]);
+            return Ok(OcrResult {
+                quotes: Vec::new(),
+                window_width: win.width,
+                window_height: win.height,
+                image_hash: hash,
+                skipped: true,
+            });
+        }
+
         // Pass 1: 快速 OCR 全图 → 检测布局
         let fast_blocks = recognize_text_fast(&image)?;
         if fast_blocks.is_empty() {
@@ -712,6 +767,8 @@ pub fn ocr_capture_and_parse(pid: i32) -> Result<OcrResult> {
                 quotes: Vec::new(),
                 window_width: win.width,
                 window_height: win.height,
+                image_hash: hash,
+                skipped: false,
             });
         }
         let layout = detect_layout(&fast_blocks);
@@ -730,6 +787,8 @@ pub fn ocr_capture_and_parse(pid: i32) -> Result<OcrResult> {
             quotes,
             window_width: win.width,
             window_height: win.height,
+            image_hash: hash,
+            skipped: false,
         });
     }
 
