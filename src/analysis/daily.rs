@@ -209,6 +209,11 @@ impl DailyAnalysisEngine {
         self.klines.len()
     }
 
+    /// 获取某只股票的缓存K线天数
+    pub fn cached_days(&self, code: &StockCode) -> usize {
+        self.klines.get(code).map(|k| k.len()).unwrap_or(0)
+    }
+
     /// 获取所有日线指标
     pub fn get_indicators(&self) -> &HashMap<StockCode, TechnicalIndicators> {
         &self.indicators
