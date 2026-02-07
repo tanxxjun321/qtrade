@@ -348,8 +348,15 @@ async fn cmd_start(config: AppConfig) -> Result<()> {
                             .to_string();
 
                         // 逐只拉取，即时合并
+                        // 按市场检测权限：某市场首次返回权限错误后跳过该市场剩余股票
+                        let mut no_permission_markets: std::collections::HashSet<crate::models::Market> =
+                            std::collections::HashSet::new();
                         let mut fetched = 0u32;
                         for (i, stock) in daily_codes.iter().enumerate() {
+                            if no_permission_markets.contains(&stock.market) {
+                                continue;
+                            }
+
                             match client
                                 .request_history_kline(stock, &begin, &end, fetch_days)
                                 .await
@@ -364,11 +371,23 @@ async fn cmd_start(config: AppConfig) -> Result<()> {
                                     }
                                 }
                                 Err(e) => {
-                                    warn!(
-                                        "Failed to get klines for {}: {}",
-                                        stock.display_code(),
-                                        e
-                                    );
+                                    let msg = format!("{}", e);
+                                    let is_permission = msg.contains("permission")
+                                        || msg.contains("未开通")
+                                        || msg.contains("no quota")
+                                        || msg.contains("not available");
+                                    if is_permission {
+                                        warn!(
+                                            "{} market no permission, skipping: {}",
+                                            stock.market, msg
+                                        );
+                                        no_permission_markets.insert(stock.market);
+                                    } else {
+                                        warn!(
+                                            "Failed to get klines for {}: {}",
+                                            stock.display_code(), msg
+                                        );
+                                    }
                                 }
                             }
 
