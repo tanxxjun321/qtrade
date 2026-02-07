@@ -96,6 +96,8 @@ fn try_parse_parts(parts: &[&str]) -> Option<QuoteSnapshot> {
         change_pct: change_pct.unwrap_or(0.0),
         turnover_rate: 0.0,
         amplitude: 0.0,
+        extended_price: None,
+        extended_change_pct: None,
         timestamp: Local::now(),
         source: DataSource::Accessibility,
     })
@@ -122,6 +124,7 @@ pub fn parse_stock_code(s: &str) -> Option<StockCode> {
             "HK" => Some(Market::HK),
             "SH" => Some(Market::SH),
             "SZ" => Some(Market::SZ),
+            "US" => Some(Market::US),
             _ => None,
         };
 
@@ -131,6 +134,7 @@ pub fn parse_stock_code(s: &str) -> Option<StockCode> {
                 "HK" => Some(Market::HK),
                 "SH" => Some(Market::SH),
                 "SZ" => Some(Market::SZ),
+                "US" => Some(Market::US),
                 _ => None,
             };
             if let Some(m) = market2 {
@@ -141,9 +145,25 @@ pub fn parse_stock_code(s: &str) -> Option<StockCode> {
         }
 
         if let Some(m) = market {
-            if code.chars().all(|c| c.is_ascii_digit()) {
+            if !code.is_empty()
+                && (code.chars().all(|c| c.is_ascii_digit())
+                    || (m == Market::US && code.chars().all(|c| c.is_ascii_uppercase())))
+            {
                 return Some(StockCode::new(m, code));
             }
+        }
+    }
+
+    // 美股字母代码：1-5 个大写字母（可带前导/尾随点号，如 .DJI, NVDA.）
+    // 排除市场前缀 HK/SH/SZ/US，这些是市场标识不是股票代码
+    {
+        let stripped = s.trim_matches('.');
+        if !stripped.is_empty()
+            && stripped.len() <= 5
+            && stripped.chars().all(|c| c.is_ascii_uppercase())
+            && !matches!(stripped, "HK" | "SH" | "SZ" | "US")
+        {
+            return Some(StockCode::new(Market::US, stripped));
         }
     }
 
@@ -153,17 +173,12 @@ pub fn parse_stock_code(s: &str) -> Option<StockCode> {
         let market = if s.len() == 5 || (s.len() <= 5 && code_num < 100_000) {
             // 5位或更短 → 港股
             Market::HK
-        } else if s.starts_with('6') || s.starts_with("00") {
-            // 6开头 → 沪市；000-004 开头 → 深市主板
-            if s.starts_with('6') {
-                Market::SH
-            } else {
-                Market::SZ
-            }
-        } else if s.starts_with('3') {
-            Market::SZ // 创业板
-        } else if s.starts_with('0') {
-            Market::SZ
+        } else if s.starts_with('6') {
+            Market::SH // 沪市主板
+        } else if s.starts_with("00") || s.starts_with('3') || s.starts_with('0') {
+            Market::SZ // 深市主板/创业板
+        } else if s.starts_with('1') {
+            Market::SZ // 深市 ETF/基金 (159xxx, 15xxxx)
         } else {
             return None;
         };
@@ -252,6 +267,24 @@ mod tests {
 
         let code = parse_stock_code("00700").unwrap();
         assert_eq!(code.market, Market::HK);
+
+        // US tickers
+        let code = parse_stock_code("AAPL").unwrap();
+        assert_eq!(code.market, Market::US);
+        assert_eq!(code.code, "AAPL");
+
+        let code = parse_stock_code("US.TSLA").unwrap();
+        assert_eq!(code.market, Market::US);
+        assert_eq!(code.code, "TSLA");
+
+        // Index with dot prefix/suffix
+        let code = parse_stock_code(".DJI").unwrap();
+        assert_eq!(code.market, Market::US);
+        assert_eq!(code.code, "DJI");
+
+        let code = parse_stock_code("NVDA.").unwrap();
+        assert_eq!(code.market, Market::US);
+        assert_eq!(code.code, "NVDA");
     }
 
     #[test]

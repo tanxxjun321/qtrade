@@ -10,6 +10,7 @@ use std::collections::{HashMap, HashSet};
 
 use crate::config::AppConfig;
 use crate::futu::accessibility::AccessibilityReader;
+use crate::futu::ocr;
 use crate::futu::openapi::OpenApiClient;
 use crate::models::{DailyKline, Market, QuoteSnapshot, StockCode};
 
@@ -108,10 +109,53 @@ impl OpenApiProvider {
     }
 }
 
+/// OCR 数据提供者（窗口截图 + Vision OCR）
+pub struct OcrProvider {
+    futu_pid: Option<i32>,
+    connected: bool,
+}
+
+impl OcrProvider {
+    pub fn new() -> Self {
+        Self {
+            futu_pid: None,
+            connected: false,
+        }
+    }
+
+    pub async fn connect(&mut self) -> Result<()> {
+        let pid = AccessibilityReader::find_futu_pid()?;
+        self.futu_pid = Some(pid);
+        self.connected = true;
+        info!("OCR provider connected to Futu app (PID: {})", pid);
+        Ok(())
+    }
+
+    pub async fn get_quotes(&self, _codes: &[StockCode]) -> Result<Vec<QuoteSnapshot>> {
+        let pid = self
+            .futu_pid
+            .ok_or_else(|| anyhow::anyhow!("Not connected. Call connect() first."))?;
+
+        // CG 截图和 Vision OCR 都是同步 API，放到阻塞线程池
+        tokio::task::spawn_blocking(move || ocr::ocr_capture_and_parse(pid))
+            .await
+            .map_err(|e| anyhow::anyhow!("spawn_blocking failed: {}", e))?
+    }
+
+    pub fn name(&self) -> &str {
+        "OCR"
+    }
+
+    pub fn is_connected(&self) -> bool {
+        self.connected
+    }
+}
+
 /// 数据源类型（枚举分发，无需 async_trait）
 pub enum DataProviderKind {
     Accessibility(AccessibilityProvider),
     OpenApi(OpenApiProvider),
+    Ocr(OcrProvider),
 }
 
 impl DataProviderKind {
@@ -125,6 +169,10 @@ impl DataProviderKind {
                     config.futu.opend_port,
                 ))
             }
+            "ocr" => {
+                info!("Using window screenshot + Vision OCR data source");
+                DataProviderKind::Ocr(OcrProvider::new())
+            }
             _ => {
                 info!("Using macOS Accessibility API data source");
                 DataProviderKind::Accessibility(AccessibilityProvider::new())
@@ -136,14 +184,16 @@ impl DataProviderKind {
         match self {
             DataProviderKind::Accessibility(p) => p.connect().await,
             DataProviderKind::OpenApi(p) => p.connect().await,
+            DataProviderKind::Ocr(p) => p.connect().await,
         }
     }
 
     /// 订阅行情（OpenAPI 模式需要先订阅）
     pub async fn subscribe(&mut self, codes: &[StockCode]) -> Result<()> {
         match self {
-            DataProviderKind::Accessibility(_) => Ok(()), // AX 不需要订阅
+            DataProviderKind::Accessibility(_) => Ok(()),
             DataProviderKind::OpenApi(p) => p.subscribe(codes).await,
+            DataProviderKind::Ocr(_) => Ok(()),
         }
     }
 
@@ -151,10 +201,11 @@ impl DataProviderKind {
         match self {
             DataProviderKind::Accessibility(p) => p.get_quotes(codes).await,
             DataProviderKind::OpenApi(p) => p.get_quotes(codes).await,
+            DataProviderKind::Ocr(p) => p.get_quotes(codes).await,
         }
     }
 
-    /// 获取历史日K线数据（Accessibility 模式返回空 Map）
+    /// 获取历史日K线数据（Accessibility/OCR 模式返回空 Map）
     pub async fn get_daily_klines(
         &mut self,
         stocks: &[StockCode],
@@ -163,6 +214,7 @@ impl DataProviderKind {
         match self {
             DataProviderKind::Accessibility(_) => Ok(HashMap::new()),
             DataProviderKind::OpenApi(p) => p.get_daily_klines(stocks, days).await,
+            DataProviderKind::Ocr(_) => Ok(HashMap::new()),
         }
     }
 
@@ -170,6 +222,7 @@ impl DataProviderKind {
         match self {
             DataProviderKind::Accessibility(p) => p.name(),
             DataProviderKind::OpenApi(p) => p.name(),
+            DataProviderKind::Ocr(p) => p.name(),
         }
     }
 
@@ -177,6 +230,7 @@ impl DataProviderKind {
         match self {
             DataProviderKind::Accessibility(p) => p.is_connected(),
             DataProviderKind::OpenApi(p) => p.is_connected(),
+            DataProviderKind::Ocr(p) => p.is_connected(),
         }
     }
 
@@ -185,6 +239,7 @@ impl DataProviderKind {
         match self {
             DataProviderKind::Accessibility(_) => HashSet::new(),
             DataProviderKind::OpenApi(p) => p.subscribed_markets(),
+            DataProviderKind::Ocr(_) => HashSet::new(),
         }
     }
 }
