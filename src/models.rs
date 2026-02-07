@@ -104,6 +104,10 @@ pub struct QuoteSnapshot {
     pub turnover_rate: f64,
     /// 振幅 (%)
     pub amplitude: f64,
+    /// 盘前/盘后价格（美股）
+    pub extended_price: Option<f64>,
+    /// 盘前/盘后涨跌幅 (%)（美股）
+    pub extended_change_pct: Option<f64>,
     /// 数据时间戳
     pub timestamp: DateTime<Local>,
     /// 数据源
@@ -127,8 +131,112 @@ impl QuoteSnapshot {
             change_pct: 0.0,
             turnover_rate: 0.0,
             amplitude: 0.0,
+            extended_price: None,
+            extended_change_pct: None,
             timestamp: Local::now(),
             source: DataSource::Cache,
+        }
+    }
+}
+
+/// 美股交易时段
+///
+/// 四个时段连续循环（美东 ET 时间固定，DST 由 chrono-tz 自动处理）：
+/// - 盘前 04:00–09:30 ET
+/// - 盘中 09:30–16:00 ET
+/// - 盘后 16:00–20:00 ET
+/// - 夜盘 20:00–04:00 ET（跨午夜）
+///
+/// 详见 docs/US_MARKET_SESSIONS.md
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UsMarketSession {
+    /// 盘前 (Pre-market) 04:00–09:30 ET
+    PreMarket,
+    /// 盘中 (Regular) 09:30–16:00 ET
+    Regular,
+    /// 盘后 (After-hours) 16:00–20:00 ET
+    AfterHours,
+    /// 夜盘 (Overnight) 20:00–04:00 ET
+    Overnight,
+    /// 休市（周末）
+    Closed,
+}
+
+impl fmt::Display for UsMarketSession {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            UsMarketSession::PreMarket => write!(f, "盘前"),
+            UsMarketSession::Regular => write!(f, "盘中"),
+            UsMarketSession::AfterHours => write!(f, "盘后"),
+            UsMarketSession::Overnight => write!(f, "夜盘"),
+            UsMarketSession::Closed => write!(f, "休市"),
+        }
+    }
+}
+
+impl UsMarketSession {
+    /// 当前时段灰色小字（扩展价格）的标签
+    ///
+    /// - 盘前/盘中/休市 → "盘前"（盘中时灰色显示盘前价，休市时灰色可能是过时的盘前价）
+    /// - 盘后 → "盘后"
+    /// - 夜盘 → "夜盘"
+    pub fn extended_label(&self) -> &'static str {
+        match self {
+            UsMarketSession::PreMarket
+            | UsMarketSession::Regular
+            | UsMarketSession::Closed => "盘前",
+            UsMarketSession::AfterHours => "盘后",
+            UsMarketSession::Overnight => "夜盘",
+        }
+    }
+}
+
+/// 获取当前美股交易时段
+///
+/// 使用 `chrono-tz` 转换为美东时间 (America/New_York)，自动处理夏/冬令时。
+/// 仅需比较 ET 本地时间与四个分界点：04:00 / 09:30 / 16:00 / 20:00。
+///
+/// 周末休市：周六 04:00 ET – 周日 20:00 ET
+pub fn us_market_session() -> UsMarketSession {
+    use chrono::{Datelike, Timelike, Utc};
+    use chrono_tz::America::New_York;
+
+    let now = Utc::now().with_timezone(&New_York);
+    let weekday = now.weekday();
+    let hhmm = now.hour() * 100 + now.minute();
+
+    match weekday {
+        chrono::Weekday::Sat => {
+            // 周六 00:00–04:00 ET: 周五夜盘延续
+            // 周六 04:00 之后: 休市
+            if hhmm < 400 {
+                UsMarketSession::Overnight
+            } else {
+                UsMarketSession::Closed
+            }
+        }
+        chrono::Weekday::Sun => {
+            // 周日 20:00 起: 夜盘（属于下周一交易日）
+            // 周日 20:00 之前: 休市
+            if hhmm >= 2000 {
+                UsMarketSession::Overnight
+            } else {
+                UsMarketSession::Closed
+            }
+        }
+        _ => {
+            // 周一至周五
+            if hhmm < 400 {
+                UsMarketSession::Overnight
+            } else if hhmm < 930 {
+                UsMarketSession::PreMarket
+            } else if hhmm < 1600 {
+                UsMarketSession::Regular
+            } else if hhmm < 2000 {
+                UsMarketSession::AfterHours
+            } else {
+                UsMarketSession::Overnight
+            }
         }
     }
 }
@@ -140,6 +248,8 @@ pub enum DataSource {
     Accessibility,
     /// FutuOpenD OpenAPI
     OpenApi,
+    /// 窗口截图 + Vision OCR
+    Ocr,
     /// 本地缓存（plist 等）
     Cache,
 }
@@ -149,6 +259,7 @@ impl fmt::Display for DataSource {
         match self {
             DataSource::Accessibility => write!(f, "AX"),
             DataSource::OpenApi => write!(f, "OpenAPI"),
+            DataSource::Ocr => write!(f, "OCR"),
             DataSource::Cache => write!(f, "Cache"),
         }
     }

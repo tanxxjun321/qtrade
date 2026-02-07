@@ -162,6 +162,8 @@ mod tests {
             change_pct: 0.5,
             turnover_rate: 0.0,
             amplitude: 0.0,
+            extended_price: None,
+            extended_change_pct: None,
             timestamp: chrono::Local::now(),
             source: DataSource::Cache,
         }
