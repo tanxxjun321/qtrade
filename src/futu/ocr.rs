@@ -32,12 +32,20 @@ pub struct OcrTextBlock {
     pub bbox: (f64, f64, f64, f64),
 }
 
-/// 查找富途牛牛 App 的主窗口 ID
+/// 窗口信息（ID + 尺寸）
+#[derive(Debug, Clone, Copy)]
+pub struct WindowInfo {
+    pub id: u32,
+    pub width: f64,
+    pub height: f64,
+}
+
+/// 查找富途牛牛 App 的主窗口 ID 和尺寸
 ///
 /// 通过 CGWindowListCopyWindowInfo 获取所有窗口，
 /// 按 owner name 匹配 "Futu" / "Niuniu" / "牛牛"，选面积最大的。
 /// 不依赖单一 PID，避免多进程场景找不到窗口。
-pub fn find_futu_window_id(pid: i32) -> Result<u32> {
+pub fn find_futu_window(pid: i32) -> Result<WindowInfo> {
     let info_list = CGWindowListCopyWindowInfo(
         CGWindowListOption::OptionAll,
         0, // kCGNullWindowID
@@ -48,7 +56,7 @@ pub fn find_futu_window_id(pid: i32) -> Result<u32> {
     let count = unsafe { core_foundation::array::CFArrayGetCount(cf_arr_ptr) };
     debug!("CGWindowListCopyWindowInfo: {} windows total", count);
 
-    let mut best_id: Option<u32> = None;
+    let mut best: Option<(u32, f64, f64)> = None;
     let mut best_area: f64 = 0.0;
 
     for i in 0..count {
@@ -92,11 +100,17 @@ pub fn find_futu_window_id(pid: i32) -> Result<u32> {
 
         if area > best_area {
             best_area = area;
-            best_id = window_id.map(|v| v as u32);
+            best = window_id.map(|v| (v as u32, w, h));
         }
     }
 
-    best_id.context("未找到富途牛牛窗口。请确认 App 已启动且窗口未最小化。")
+    best.map(|(id, width, height)| WindowInfo { id, width, height })
+        .context("未找到富途牛牛窗口。请确认 App 已启动且窗口未最小化。")
+}
+
+/// 兼容旧接口：只返回窗口 ID
+pub fn find_futu_window_id(pid: i32) -> Result<u32> {
+    find_futu_window(pid).map(|w| w.id)
 }
 
 /// 检查是否拥有屏幕录制权限
@@ -646,33 +660,40 @@ fn ocr_parse_market_name(s: &str) -> Option<(Market, String)> {
     None
 }
 
+/// OCR 结果（含窗口尺寸，供调用方做 resize 检测）
+pub struct OcrResult {
+    pub quotes: Vec<QuoteSnapshot>,
+    pub window_width: f64,
+    pub window_height: f64,
+}
+
 /// 完整的 OCR 数据管线：找窗口 → 截图 → OCR → 分行 → 解析
 ///
 /// 支持重试：截图失败时等待短暂间隔后重新查找窗口 ID 并重试，
 /// 以应对窗口调整大小或 compositor 过渡状态导致的瞬间失败。
-pub fn ocr_capture_and_parse(pid: i32) -> Result<Vec<QuoteSnapshot>> {
+pub fn ocr_capture_and_parse(pid: i32) -> Result<OcrResult> {
     const MAX_RETRIES: u32 = 2;
     const RETRY_DELAY_MS: u64 = 200;
 
     let mut last_err = None;
 
     for attempt in 0..=MAX_RETRIES {
-        // 每次重试都重新查找窗口 ID（窗口 resize 后 ID 可能改变）
-        let window_id = match find_futu_window_id(pid) {
-            Ok(id) => id,
+        // 每次重试都重新查找窗口（含尺寸，供 resize 检测）
+        let win = match find_futu_window(pid) {
+            Ok(w) => w,
             Err(e) => {
                 last_err = Some(e);
                 if attempt < MAX_RETRIES {
-                    warn!("find_futu_window_id failed (attempt {}), retrying...", attempt + 1);
+                    warn!("find_futu_window failed (attempt {}), retrying...", attempt + 1);
                     std::thread::sleep(std::time::Duration::from_millis(RETRY_DELAY_MS));
                 }
                 continue;
             }
         };
-        debug!("Using window ID: {} (attempt {})", window_id, attempt + 1);
+        debug!("Using window ID: {} size={}x{} (attempt {})", win.id, win.width, win.height, attempt + 1);
 
         // 截图
-        let image = match capture_window(window_id) {
+        let image = match capture_window(win.id) {
             Ok(img) => img,
             Err(e) => {
                 last_err = Some(e);
@@ -687,7 +708,11 @@ pub fn ocr_capture_and_parse(pid: i32) -> Result<Vec<QuoteSnapshot>> {
         // Pass 1: 快速 OCR 全图 → 检测布局
         let fast_blocks = recognize_text_fast(&image)?;
         if fast_blocks.is_empty() {
-            return Ok(Vec::new());
+            return Ok(OcrResult {
+                quotes: Vec::new(),
+                window_width: win.width,
+                window_height: win.height,
+            });
         }
         let layout = detect_layout(&fast_blocks);
         debug!("Fast OCR: {} blocks, layout: {:?}", fast_blocks.len(), layout);
@@ -701,7 +726,11 @@ pub fn ocr_capture_and_parse(pid: i32) -> Result<Vec<QuoteSnapshot>> {
         let rows = group_into_rows(&blocks);
         let quotes = parse_watchlist_from_ocr(&rows);
         info!("OCR parsed {} quotes from {} rows", quotes.len(), rows.len());
-        return Ok(quotes);
+        return Ok(OcrResult {
+            quotes,
+            window_width: win.width,
+            window_height: win.height,
+        });
     }
 
     Err(last_err.unwrap_or_else(|| anyhow::anyhow!("OCR capture failed after {} retries", MAX_RETRIES + 1)))
