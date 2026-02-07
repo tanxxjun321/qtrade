@@ -2,7 +2,7 @@
 log_level = "info"
 
 [data_source]
-source = "openapi"
+source = "ocr"
 refresh_interval_secs = 2
 
 [futu]

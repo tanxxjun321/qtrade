@@ -9,6 +9,9 @@ description = "量化交易盯盘系统 - 智能行情监控与分析"
 objc2 = "0.6"
 objc2-foundation = "0.3"
 objc2-app-kit = "0.3"
+objc2-core-foundation = { version = "0.3", features = ["CFCGTypes", "CFArray", "CFDictionary"] }
+objc2-core-graphics = { version = "0.3", features = ["CGImage", "CGWindow", "CGGeometry", "CGColorSpace"] }
+objc2-vision = { version = "0.3", features = ["VNRecognizeTextRequest", "VNRequestHandler", "VNObservation", "VNRequest", "VNTypes"] }
 core-foundation = "0.10"
 
 # FutuOpenD OpenAPI 方案
@@ -42,6 +45,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 # 工具
 chrono = { version = "0.4", features = ["serde"] }
+chrono-tz = "0.10"
 anyhow = "1"
 sha1 = "0.10"
 serde_json = "1"
