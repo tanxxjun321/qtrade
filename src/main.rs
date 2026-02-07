@@ -352,13 +352,25 @@ async fn cmd_start(config: AppConfig) -> Result<()> {
                         let mut no_permission_markets: std::collections::HashSet<crate::models::Market> =
                             std::collections::HashSet::new();
                         let mut fetched = 0u32;
+                        // 增量模式下，缓存不足的股票单独全量拉取
+                        const MIN_CACHED_DAYS: usize = 60;
                         for (i, stock) in daily_codes.iter().enumerate() {
                             if no_permission_markets.contains(&stock.market) {
                                 continue;
                             }
 
+                            let stock_fetch_days = if !need_full {
+                                let cached = {
+                                    let de = daily_engine_clone.lock().await;
+                                    de.cached_days(stock)
+                                };
+                                if cached < MIN_CACHED_DAYS { daily_days } else { fetch_days }
+                            } else {
+                                fetch_days
+                            };
+
                             match client
-                                .request_history_kline(stock, &begin, &end, fetch_days)
+                                .request_history_kline(stock, &begin, &end, stock_fetch_days)
                                 .await
                             {
                                 Ok(klines) => {
