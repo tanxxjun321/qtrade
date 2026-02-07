@@ -194,13 +194,12 @@ async fn cmd_start(config: AppConfig) -> Result<()> {
 
     // 创建日线分析引擎，加载缓存
     let daily_engine = Arc::new(Mutex::new(DailyAnalysisEngine::new()));
-    let cache_last_updated = {
+    {
         let mut de = daily_engine.lock().await;
-        let last = de.load_cache();
+        de.load_cache();
         if de.stock_count() > 0 {
             info!("Loaded daily kline cache: {} stocks", de.stock_count());
         }
-        last
     };
 
     // 创建分析引擎
@@ -296,7 +295,6 @@ async fn cmd_start(config: AppConfig) -> Result<()> {
         let futu_port = config.futu.opend_port;
         let daily_days = config.analysis.daily_kline_days;
         let refresh_mins = config.analysis.daily_kline_refresh_minutes;
-        let cached_date = cache_last_updated.clone();
 
         // 日K线通过独立连接拉取，不依赖实时行情的订阅状态
         let daily_codes = stock_codes.clone();
@@ -312,28 +310,13 @@ async fn cmd_start(config: AppConfig) -> Result<()> {
                     tokio::time::sleep(Duration::from_secs(refresh_mins * 60)).await;
                 }
 
-                // 判断全量还是增量
-                let need_full = if first {
-                    match &cached_date {
-                        Some(d) => {
-                            crate::analysis::daily::cache_needs_full_refresh(d, 3)
-                        }
-                        None => true,
-                    }
-                } else {
-                    false // 运行中刷新始终增量
-                };
                 first = false;
-
-                let fetch_days: u32 = if need_full { daily_days } else { 5 };
-                let mode = if need_full { "全量" } else { "增量" };
                 let total = daily_codes.len();
 
-                info!("Fetching daily K-line data ({}，{}天，{}只)...", mode, fetch_days, total);
+                info!("Fetching daily K-line data ({}只)...", total);
                 {
                     let mut state = dash_for_daily.lock().await;
-                    state.daily_kline_status =
-                        format!("日K{}中(0/{})", mode, total);
+                    state.daily_kline_status = format!("日K拉取中(0/{})", total);
                 }
 
                 // 创建独立连接
@@ -341,46 +324,75 @@ async fn cmd_start(config: AppConfig) -> Result<()> {
                     crate::futu::openapi::OpenApiClient::new(&futu_host, futu_port);
                 match client.connect().await {
                     Ok(()) => {
-                        let end = chrono::Local::now().format("%Y-%m-%d").to_string();
-                        let begin = (chrono::Local::now()
-                            - chrono::Duration::days(fetch_days as i64 * 2))
-                            .format("%Y-%m-%d")
-                            .to_string();
-
-                        // 逐只拉取，即时合并
-                        // 按市场检测权限：某市场首次返回权限错误后跳过该市场剩余股票
+                        // 逐只拉取，每只独立判断拉取天数，拉取后验证连续性
                         let mut no_permission_markets: std::collections::HashSet<crate::models::Market> =
                             std::collections::HashSet::new();
                         let mut fetched = 0u32;
-                        // 增量模式下，缓存不足的股票单独全量拉取
-                        const MIN_CACHED_DAYS: usize = 60;
+                        let today_str = chrono::Local::now().format("%Y-%m-%d").to_string();
                         for (i, stock) in daily_codes.iter().enumerate() {
                             if no_permission_markets.contains(&stock.market) {
                                 continue;
                             }
 
-                            let stock_fetch_days = if !need_full {
-                                let cached = {
-                                    let de = daily_engine_clone.lock().await;
-                                    de.cached_days(stock)
-                                };
-                                if cached < MIN_CACHED_DAYS { daily_days } else { fetch_days }
-                            } else {
-                                fetch_days
+                            // 今天已拉取过 → 跳过
+                            {
+                                let de = daily_engine_clone.lock().await;
+                                if de.last_fetched_date(stock) == Some(today_str.as_str()) {
+                                    continue;
+                                }
+                            }
+
+                            // 确定拉取天数：无缓存→全量，有缓存→gap+5 自适应
+                            let (fetch_days, last_date) = {
+                                let de = daily_engine_clone.lock().await;
+                                match de.last_kline_date(stock) {
+                                    Some(ld) => {
+                                        let gap = date_gap_days(&ld, &today_str);
+                                        let days = (gap + 5).max(5).min(daily_days);
+                                        (days, Some(ld))
+                                    }
+                                    None => (daily_days, None),
+                                }
                             };
 
+                            let end = today_str.clone();
+                            let begin = (chrono::Local::now()
+                                - chrono::Duration::days(fetch_days as i64 * 2))
+                                .format("%Y-%m-%d")
+                                .to_string();
+
                             match client
-                                .request_history_kline(stock, &begin, &end, stock_fetch_days)
+                                .request_history_kline(stock, &begin, &end, fetch_days)
                                 .await
                             {
                                 Ok(klines) => {
-                                    if !klines.is_empty() {
+                                    if klines.is_empty() {
+                                        continue;
+                                    }
+                                    // 验证连续性：缓存尾部日期必须出现在新数据中
+                                    let mut de = daily_engine_clone.lock().await;
+                                    if let Some(ref ld) = last_date {
+                                        let has_overlap = klines.iter().any(|k| &k.date == ld);
+                                        if has_overlap {
+                                            let mut data = std::collections::HashMap::new();
+                                            data.insert(stock.clone(), klines);
+                                            de.merge_update(data);
+                                        } else {
+                                            warn!(
+                                                "{}: cache discontinuous (last_date={}, fetched {}~{}), replacing",
+                                                stock.display_code(), ld,
+                                                klines.first().map(|k| k.date.as_str()).unwrap_or("?"),
+                                                klines.last().map(|k| k.date.as_str()).unwrap_or("?"),
+                                            );
+                                            de.replace_stock(stock.clone(), klines);
+                                        }
+                                    } else {
                                         let mut data = std::collections::HashMap::new();
                                         data.insert(stock.clone(), klines);
-                                        let mut de = daily_engine_clone.lock().await;
                                         de.merge_update(data);
-                                        fetched += 1;
                                     }
+                                    de.mark_fetched(stock, &today_str);
+                                    fetched += 1;
                                 }
                                 Err(e) => {
                                     let msg = format!("{}", e);
@@ -407,7 +419,7 @@ async fn cmd_start(config: AppConfig) -> Result<()> {
                             {
                                 let mut state = dash_for_daily.lock().await;
                                 state.daily_kline_status =
-                                    format!("日K{}中({}/{})", mode, i + 1, total);
+                                    format!("日K拉取中({}/{})", i + 1, total);
                             }
 
                             // 每 10 只存盘一次 + 同步 dashboard
@@ -436,8 +448,8 @@ async fn cmd_start(config: AppConfig) -> Result<()> {
                             state.daily_kline_status =
                                 format!("日K:{}只 信号:{}", de.stock_count(), sig_count);
                             info!(
-                                "Daily K-line {} complete: fetched {}, total {}, {} signals",
-                                mode, fetched, de.stock_count(), sig_count
+                                "Daily K-line complete: fetched {}, total {}, {} signals",
+                                fetched, de.stock_count(), sig_count
                             );
                         }
 
@@ -751,4 +763,17 @@ async fn cmd_test_ocr(_config: AppConfig) -> Result<()> {
     );
 
     Ok(())
+}
+
+/// 计算两个日期字符串之间的自然日间隔（"YYYY-MM-DD" 格式）
+fn date_gap_days(from: &str, to: &str) -> u32 {
+    let from_date = match chrono::NaiveDate::parse_from_str(from, "%Y-%m-%d") {
+        Ok(d) => d,
+        Err(_) => return u32::MAX, // 解析失败视为需要全量
+    };
+    let to_date = match chrono::NaiveDate::parse_from_str(to, "%Y-%m-%d") {
+        Ok(d) => d,
+        Err(_) => return u32::MAX,
+    };
+    (to_date - from_date).num_days().max(0) as u32
 }

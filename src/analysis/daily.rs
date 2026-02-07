@@ -12,19 +12,27 @@ use crate::models::{DailyKline, StockCode, TechnicalIndicators, Timeframe, Timed
 use super::indicators;
 use super::signals;
 
+/// 单只股票的缓存数据
+#[derive(serde::Serialize, serde::Deserialize)]
+struct StockKlineCache {
+    /// K线数据
+    klines: Vec<DailyKline>,
+    /// 最后成功拉取日期 (YYYY-MM-DD)
+    last_fetched: String,
+}
+
 /// 缓存文件结构
 #[derive(serde::Serialize, serde::Deserialize)]
 struct KlineCache {
-    /// 最后更新日期 (YYYY-MM-DD)
-    last_updated: String,
-    /// 每只股票的K线数据，key 为 "HK.00700" 格式
-    stocks: HashMap<String, Vec<DailyKline>>,
+    stocks: HashMap<String, StockKlineCache>,
 }
 
 /// 日线分析引擎
 pub struct DailyAnalysisEngine {
     /// 每只股票的日K线数据
     klines: HashMap<StockCode, Vec<DailyKline>>,
+    /// 每只股票最后成功拉取日期
+    last_fetched: HashMap<StockCode, String>,
     /// 当前指标
     indicators: HashMap<StockCode, TechnicalIndicators>,
     /// 上一次指标（用于检测交叉）
@@ -40,6 +48,7 @@ impl DailyAnalysisEngine {
     pub fn new() -> Self {
         Self {
             klines: HashMap::new(),
+            last_fetched: HashMap::new(),
             indicators: HashMap::new(),
             prev_indicators: HashMap::new(),
             signals: HashMap::new(),
@@ -52,18 +61,18 @@ impl DailyAnalysisEngine {
         PathBuf::from(home).join(".config/qtrade/kline_cache.json")
     }
 
-    /// 从缓存文件加载K线数据，返回 last_updated 日期
-    pub fn load_cache(&mut self) -> Option<String> {
+    /// 从缓存文件加载K线数据
+    pub fn load_cache(&mut self) {
         let path = Self::cache_path();
         if !path.exists() {
-            return None;
+            return;
         }
 
         let content = match std::fs::read_to_string(&path) {
             Ok(c) => c,
             Err(e) => {
                 warn!("Failed to read kline cache: {}", e);
-                return None;
+                return;
             }
         };
 
@@ -71,27 +80,25 @@ impl DailyAnalysisEngine {
             Ok(c) => c,
             Err(e) => {
                 warn!("Failed to parse kline cache: {}", e);
-                return None;
+                return;
             }
         };
 
-        let last_updated = cache.last_updated.clone();
         let mut count = 0;
 
-        for (key, klines) in cache.stocks {
+        for (key, sc) in cache.stocks {
             if let Some(code) = parse_stock_key(&key) {
                 count += 1;
-                self.klines.insert(code, klines);
+                self.klines.insert(code.clone(), sc.klines);
+                if !sc.last_fetched.is_empty() {
+                    self.last_fetched.insert(code, sc.last_fetched);
+                }
             }
         }
 
         if count > 0 {
-            // 用缓存数据计算指标
             self.recompute_all();
-            info!("Loaded {} stocks from kline cache ({})", count, last_updated);
-            Some(last_updated)
-        } else {
-            None
+            info!("Loaded {} stocks from kline cache", count);
         }
     }
 
@@ -109,13 +116,21 @@ impl DailyAnalysisEngine {
 
         let mut stocks = HashMap::new();
         for (code, klines) in &self.klines {
-            stocks.insert(code.display_code(), klines.clone());
+            let last_fetched = self
+                .last_fetched
+                .get(code)
+                .cloned()
+                .unwrap_or_default();
+            stocks.insert(
+                code.display_code(),
+                StockKlineCache {
+                    klines: klines.clone(),
+                    last_fetched,
+                },
+            );
         }
 
-        let cache = KlineCache {
-            last_updated: chrono::Local::now().format("%Y-%m-%d").to_string(),
-            stocks,
-        };
+        let cache = KlineCache { stocks };
 
         match serde_json::to_string(&cache) {
             Ok(json) => {
@@ -214,6 +229,30 @@ impl DailyAnalysisEngine {
         self.klines.get(code).map(|k| k.len()).unwrap_or(0)
     }
 
+    /// 获取某只股票缓存中最后一条K线的日期
+    pub fn last_kline_date(&self, code: &StockCode) -> Option<String> {
+        self.klines
+            .get(code)
+            .and_then(|k| k.last())
+            .map(|k| k.date.clone())
+    }
+
+    /// 替换某只股票的全部K线数据（断裂时使用，丢弃旧缓存）
+    pub fn replace_stock(&mut self, code: StockCode, klines: Vec<DailyKline>) {
+        self.klines.insert(code, klines);
+        self.recompute_all();
+    }
+
+    /// 记录某只股票最后成功拉取日期
+    pub fn mark_fetched(&mut self, code: &StockCode, date: &str) {
+        self.last_fetched.insert(code.clone(), date.to_string());
+    }
+
+    /// 获取某只股票最后成功拉取日期
+    pub fn last_fetched_date(&self, code: &StockCode) -> Option<&str> {
+        self.last_fetched.get(code).map(|s| s.as_str())
+    }
+
     /// 获取所有日线指标
     pub fn get_indicators(&self) -> &HashMap<StockCode, TechnicalIndicators> {
         &self.indicators
@@ -265,25 +304,6 @@ fn parse_stock_key(key: &str) -> Option<StockCode> {
         _ => return None,
     };
     Some(StockCode::new(market, code))
-}
-
-/// 判断缓存是否需要全量刷新（距今超过 max_age_days 天）
-pub fn cache_needs_full_refresh(last_updated: &str, max_age_days: i64) -> bool {
-    let today = chrono::Local::now().format("%Y-%m-%d").to_string();
-    if last_updated == today {
-        return false; // 当天已更新，不需要刷新
-    }
-
-    let last = match chrono::NaiveDate::parse_from_str(last_updated, "%Y-%m-%d") {
-        Ok(d) => d,
-        Err(_) => return true,
-    };
-    let now = match chrono::NaiveDate::parse_from_str(&today, "%Y-%m-%d") {
-        Ok(d) => d,
-        Err(_) => return true,
-    };
-
-    (now - last).num_days() > max_age_days
 }
 
 #[cfg(test)]
@@ -433,10 +453,4 @@ mod tests {
         assert_eq!(jan10.close, 200.0);
     }
 
-    #[test]
-    fn test_cache_needs_full_refresh() {
-        let today = chrono::Local::now().format("%Y-%m-%d").to_string();
-        assert!(!cache_needs_full_refresh(&today, 3));
-        assert!(cache_needs_full_refresh("2020-01-01", 3));
-    }
 }
