@@ -32,12 +32,13 @@ pub struct OcrTextBlock {
     pub bbox: (f64, f64, f64, f64),
 }
 
-/// 窗口信息（ID + 尺寸）
+/// 窗口信息（ID + 尺寸 + 所属进程 PID）
 #[derive(Debug, Clone, Copy)]
 pub struct WindowInfo {
     pub id: u32,
     pub width: f64,
     pub height: f64,
+    pub owner_pid: i32,
 }
 
 /// 查找富途牛牛 App 的主窗口 ID 和尺寸
@@ -56,7 +57,7 @@ pub fn find_futu_window(pid: i32) -> Result<WindowInfo> {
     let count = unsafe { core_foundation::array::CFArrayGetCount(cf_arr_ptr) };
     debug!("CGWindowListCopyWindowInfo: {} windows total", count);
 
-    let mut best: Option<(u32, f64, f64)> = None;
+    let mut best: Option<(u32, f64, f64, i32)> = None;
     let mut best_area: f64 = 0.0;
 
     for i in 0..count {
@@ -100,11 +101,13 @@ pub fn find_futu_window(pid: i32) -> Result<WindowInfo> {
 
         if area > best_area {
             best_area = area;
-            best = window_id.map(|v| (v as u32, w, h));
+            if let (Some(wid), Some(opid)) = (window_id, owner_pid) {
+                best = Some((wid as u32, w, h, opid));
+            }
         }
     }
 
-    best.map(|(id, width, height)| WindowInfo { id, width, height })
+    best.map(|(id, width, height, owner_pid)| WindowInfo { id, width, height, owner_pid })
         .context("未找到富途牛牛窗口。请确认 App 已启动且窗口未最小化。")
 }
 
@@ -341,28 +344,46 @@ pub fn detect_layout(blocks: &[OcrTextBlock]) -> WindowLayout {
 /// 按归一化坐标裁剪图像区域
 ///
 /// `x_range`: (left, right) 归一化 X 范围 0.0-1.0
+/// `y_range`: 可选 (top, bottom) 归一化 Y 范围 0.0-1.0
 /// 返回裁剪后的子图像
 pub fn crop_image(
     image: &CGImage,
     x_range: (f64, f64),
 ) -> Result<CFRetained<CGImage>> {
+    crop_image_xy(image, x_range, None)
+}
+
+/// 按归一化坐标裁剪图像区域（支持 X + Y 同时裁剪）
+///
+/// `x_range`: (left, right) 归一化 X 范围 0.0-1.0
+/// `y_range`: 可选 (top, bottom) 归一化 Y 范围 0.0-1.0
+pub fn crop_image_xy(
+    image: &CGImage,
+    x_range: (f64, f64),
+    y_range: Option<(f64, f64)>,
+) -> Result<CFRetained<CGImage>> {
     let w = CGImage::width(Some(image)) as f64;
     let h = CGImage::height(Some(image)) as f64;
+
+    let (y_start, crop_h) = match y_range {
+        Some((top, bottom)) => ((top * h).floor(), ((bottom - top) * h).ceil()),
+        None => (0.0, h),
+    };
 
     let rect = CGRect {
         origin: CGPoint {
             x: (x_range.0 * w).floor(),
-            y: 0.0,
+            y: y_start,
         },
         size: CGSize {
             width: ((x_range.1 - x_range.0) * w).ceil(),
-            height: h,
+            height: crop_h,
         },
     };
 
     debug!(
-        "Cropping image {}x{} to rect ({:.0}, 0, {:.0}, {:.0})",
-        w, h, rect.origin.x, rect.size.width, rect.size.height
+        "Cropping image {}x{} to rect ({:.0}, {:.0}, {:.0}, {:.0})",
+        w, h, rect.origin.x, rect.origin.y, rect.size.width, rect.size.height
     );
 
     CGImageCreateWithImageInRect(Some(image), rect)
@@ -713,7 +734,13 @@ fn compute_image_hash(image: &CGImage) -> String {
 ///
 /// 如果 `prev_hash` 不为空且与当前截图哈希相同，跳过 OCR 返回空 quotes + skipped=true。
 /// 调用方应在 skipped=true 时复用上一轮结果。
-pub fn ocr_capture_and_parse(pid: i32, prev_hash: &str) -> Result<OcrResult> {
+///
+/// 如果提供了 `grid_frame`（来自 AX API 检测），直接按该区域裁剪，跳过 Pass 1 快速 OCR。
+pub fn ocr_capture_and_parse(
+    pid: i32,
+    prev_hash: &str,
+    grid_frame: Option<crate::futu::accessibility::GridFrame>,
+) -> Result<OcrResult> {
     const MAX_RETRIES: u32 = 2;
     const RETRY_DELAY_MS: u64 = 200;
 
@@ -760,22 +787,32 @@ pub fn ocr_capture_and_parse(pid: i32, prev_hash: &str) -> Result<OcrResult> {
             });
         }
 
-        // Pass 1: 快速 OCR 全图 → 检测布局
-        let fast_blocks = recognize_text_fast(&image)?;
-        if fast_blocks.is_empty() {
-            return Ok(OcrResult {
-                quotes: Vec::new(),
-                window_width: win.width,
-                window_height: win.height,
-                image_hash: hash,
-                skipped: false,
-            });
-        }
-        let layout = detect_layout(&fast_blocks);
-        debug!("Fast OCR: {} blocks, layout: {:?}", fast_blocks.len(), layout);
-
-        // Pass 2: 裁剪自选股区域 → 精确 OCR
-        let watchlist_crop = crop_image(&image, layout.watchlist_x)?;
+        // 有 AX GridFrame → 跳过 Pass 1，直接按 grid frame 裁剪
+        // 无 GridFrame → 降级到 Pass 1 快速 OCR 检测布局
+        let watchlist_crop = if let Some(gf) = grid_frame {
+            debug!(
+                "Using AX grid frame: ({:.3},{:.3},{:.3},{:.3}), skipping Pass 1",
+                gf.x, gf.y, gf.width, gf.height
+            );
+            let x_range = (gf.x, (gf.x + gf.width).min(1.0));
+            let y_range = Some((gf.y, (gf.y + gf.height).min(1.0)));
+            crop_image_xy(&image, x_range, y_range)?
+        } else {
+            // Pass 1: 快速 OCR 全图 → 检测布局
+            let fast_blocks = recognize_text_fast(&image)?;
+            if fast_blocks.is_empty() {
+                return Ok(OcrResult {
+                    quotes: Vec::new(),
+                    window_width: win.width,
+                    window_height: win.height,
+                    image_hash: hash,
+                    skipped: false,
+                });
+            }
+            let layout = detect_layout(&fast_blocks);
+            debug!("Fast OCR: {} blocks, layout: {:?}", fast_blocks.len(), layout);
+            crop_image(&image, layout.watchlist_x)?
+        };
         let blocks = recognize_text(&watchlist_crop)?;
         debug!("Watchlist crop OCR: {} blocks", blocks.len());
 

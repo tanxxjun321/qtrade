@@ -9,7 +9,7 @@ use tracing::{debug, info, warn};
 use std::collections::{HashMap, HashSet};
 
 use crate::config::AppConfig;
-use crate::futu::accessibility::AccessibilityReader;
+use crate::futu::accessibility::{AccessibilityReader, GridFrame};
 use crate::futu::ocr;
 use crate::futu::openapi::OpenApiClient;
 use crate::models::{DailyKline, Market, QuoteSnapshot, StockCode};
@@ -112,6 +112,8 @@ impl OpenApiProvider {
 /// OCR 数据提供者（窗口截图 + Vision OCR）
 pub struct OcrProvider {
     futu_pid: Option<i32>,
+    /// GUI 进程 PID（可能与 futu_pid 不同，用于 AX API）
+    gui_pid: Option<i32>,
     connected: bool,
     /// 上一次窗口尺寸，用于 resize 检测
     last_window_size: Option<(f64, f64)>,
@@ -123,18 +125,22 @@ pub struct OcrProvider {
     unknown_code_streak: HashMap<StockCode, u32>,
     /// 上一轮有效结果的代码集（用于清理 streak）
     last_valid_codes: HashSet<StockCode>,
+    /// AX API 检测到的自选股表格区域（归一化坐标），用于跳过 Pass 1 快速 OCR
+    cached_grid_frame: Option<GridFrame>,
 }
 
 impl OcrProvider {
     pub fn new() -> Self {
         Self {
             futu_pid: None,
+            gui_pid: None,
             connected: false,
             last_window_size: None,
             last_image_hash: String::new(),
             last_quotes: Vec::new(),
             unknown_code_streak: HashMap::new(),
             last_valid_codes: HashSet::new(),
+            cached_grid_frame: None,
         }
     }
 
@@ -143,7 +149,47 @@ impl OcrProvider {
         self.futu_pid = Some(pid);
         self.connected = true;
         info!("OCR provider connected to Futu app (PID: {})", pid);
+
+        // 通过 CGWindowList 获取实际 GUI PID（可能与 pgrep 找到的 PID 不同）
+        match ocr::find_futu_window(pid) {
+            Ok(win) => {
+                self.gui_pid = Some(win.owner_pid);
+                if win.owner_pid != pid {
+                    info!("GUI PID differs from pgrep PID: {} vs {}", win.owner_pid, pid);
+                }
+            }
+            Err(e) => {
+                warn!("find_futu_window failed: {}, using pgrep PID for AX", e);
+                self.gui_pid = Some(pid);
+            }
+        }
+
+        // 尝试通过 AX API 检测自选股表格区域
+        if let Some(gp) = self.gui_pid {
+            self.detect_grid_frame(gp);
+        }
+
         Ok(())
+    }
+
+    /// 通过 AX API 检测自选股表格区域
+    fn detect_grid_frame(&mut self, pid: i32) {
+        match crate::futu::accessibility::find_watchlist_grid_frame(pid) {
+            Ok(frame) => {
+                info!(
+                    "AX detected grid frame: ({:.1}%,{:.1}%,{:.1}%,{:.1}%)",
+                    frame.x * 100.0,
+                    frame.y * 100.0,
+                    frame.width * 100.0,
+                    frame.height * 100.0,
+                );
+                self.cached_grid_frame = Some(frame);
+            }
+            Err(e) => {
+                warn!("AX grid detection failed, will use Pass 1 OCR: {}", e);
+                self.cached_grid_frame = None;
+            }
+        }
     }
 
     pub async fn get_quotes(&mut self, _codes: &[StockCode]) -> Result<Vec<QuoteSnapshot>> {
@@ -153,8 +199,9 @@ impl OcrProvider {
 
         // CG 截图和 Vision OCR 都是同步 API，放到阻塞线程池
         let prev_hash = self.last_image_hash.clone();
+        let grid_frame = self.cached_grid_frame;
         let result = tokio::task::spawn_blocking(move || {
-            ocr::ocr_capture_and_parse(pid, &prev_hash)
+            ocr::ocr_capture_and_parse(pid, &prev_hash, grid_frame)
         })
             .await
             .map_err(|e| anyhow::anyhow!("spawn_blocking failed: {}", e))??;
@@ -165,15 +212,18 @@ impl OcrProvider {
             return Ok(self.last_quotes.clone());
         }
 
-        // Layer 1: 窗口 resize 检测 — 尺寸变化时跳过本轮
+        // Layer 1: 窗口 resize 检测 — 尺寸变化时跳过本轮 + 重新探测 grid frame
         let new_size = (result.window_width, result.window_height);
         if let Some(prev) = self.last_window_size {
             if (prev.0 - new_size.0).abs() > 1.0 || (prev.1 - new_size.1).abs() > 1.0 {
                 warn!(
-                    "Window resized ({:.0}x{:.0} → {:.0}x{:.0}), skipping OCR result",
+                    "Window resized ({:.0}x{:.0} → {:.0}x{:.0}), skipping OCR result + re-detecting grid",
                     prev.0, prev.1, new_size.0, new_size.1
                 );
                 self.last_window_size = Some(new_size);
+                if let Some(gp) = self.gui_pid {
+                    self.detect_grid_frame(gp);
+                }
                 return Ok(Vec::new());
             }
         }

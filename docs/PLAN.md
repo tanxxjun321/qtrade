@@ -4,9 +4,10 @@
 
 开发一个量化交易监控程序，直接从 macOS 上运行的富途牛牛 App 获取实时行情数据，用于港股和A股的智能盯盘。不依赖 FutuOpenD 网关，而是通过 macOS 系统级 API（Accessibility API 读取 UI 元素 + Window Capture + Vision OCR 作为后备）从 App 窗口中提取数据。
 
-数据源双通道：
+数据源三通道：
 1. **macOS Accessibility API** — 直接从 App 窗口 UI 元素读取实时行情（无需额外软件）
 2. **FutuOpenD + OpenAPI** — 通过官方网关获取结构化行情数据（更稳定，支持 K 线/订单簿等丰富数据）
+3. **窗口截图 + Vision OCR** — CGWindowListCreateImage 截图 + VNRecognizeTextRequest 识别文字，AX API 辅助布局检测
 
 技术选型：**Rust** + macOS 底层框架（objc2 生态） + ratatui 终端展示。
 
@@ -40,11 +41,12 @@ qtrade/
 │   ├── futu/
 │   │   ├── mod.rs
 │   │   ├── watchlist.rs            # 读取 App 本地 plist 自选股列表
-│   │   ├── accessibility.rs        # macOS AXUIElement 读取 App 窗口 UI 元素
+│   │   ├── accessibility.rs        # macOS AXUIElement 读取 App 窗口 + GridFrame 检测
+│   │   ├── ocr.rs                  # 窗口截图 + Vision OCR 文字识别
 │   │   └── openapi.rs              # FutuOpenD TCP 协议客户端（protobuf）
 │   ├── data/
 │   │   ├── mod.rs
-│   │   ├── provider.rs             # DataProvider trait + 调度（AX / OpenAPI 可切换）
+│   │   ├── provider.rs             # DataProviderKind 枚举分发（AX / OpenAPI / OCR）
 │   │   └── parser.rs               # 从原始文本/AX值解析为 QuoteSnapshot
 │   ├── analysis/
 │   │   ├── mod.rs
@@ -72,17 +74,16 @@ qtrade/
 ## 数据流架构
 
 ```
-数据源（可切换）：
+数据源（可切换，source = "accessibility" | "openapi" | "ocr"）：
 
-方案 A: Accessibility API          方案 B: FutuOpenD + OpenAPI
-(accessibility.rs)                 (openapi.rs)
-  │ 读取 App UI 元素文本               │ TCP protobuf 连接 localhost:11111
-  │ 无需额外软件                       │ 支持实时订阅推送、历史K线、订单簿
-  │                                   │
-  └──────────┬────────────────────────┘
+方案 A: Accessibility API    方案 B: FutuOpenD + OpenAPI    方案 C: 截图 + OCR
+(accessibility.rs)           (openapi.rs)                   (ocr.rs + accessibility.rs)
+  │ 读取 App UI 元素文本         │ TCP protobuf localhost:11111   │ CGWindowList 截图
+  │ 无需额外软件                 │ K线/订单簿/实时推送              │ AX API 检测 GridFrame
+  │                             │                               │ Vision OCR 文字识别
+  └──────────┬──────────────────┼───────────────────────────────┘
              │
-       DataProvider trait (provider.rs)
-       配置选择：source = "accessibility" | "openapi"
+       DataProviderKind (provider.rs)
              │
        parser.rs → QuoteSnapshot
              │
@@ -95,7 +96,7 @@ AlertMgr  Analysis  Dashboard
     ▲        │
     └────────┘ (指标信号)
 
-watchlist.rs：从 plist 读取自选股列表（两种方案共用）
+watchlist.rs：从 plist 读取自选股列表（三种方案共用）
 ```
 
 ### 线程模型（tokio async）
@@ -195,9 +196,10 @@ prost-build = "0.13"
 1. **自选股读取**：`cargo run -- watchlist` → 打印从 plist 读取的自选股
 2. **AX 数据获取**：打开富途牛牛 App → `cargo run -- start` → 终端显示实时价格
 3. **OpenAPI 数据源**：启动 FutuOpenD → 配置 `source = "openapi"` → 确认实时推送行情
-4. **指标计算**：`cargo test` → 验证 MA/MACD/RSI 对已知数据的计算结果
-5. **提醒触发**：设置涨跌幅阈值为 0.01% → 确认提醒触发和冷却机制生效
-6. **端到端**：App 运行中 → qtrade 持续监控 → 行情变化时终端实时更新 + 提醒
+4. **OCR 数据源**：`cargo run -- test-ocr` → 显示 AX GridFrame 检测结果 + OCR 识别行情；AX 成功时 Pass 1 被跳过
+5. **指标计算**：`cargo test` → 验证 MA/MACD/RSI 对已知数据的计算结果
+6. **提醒触发**：设置涨跌幅阈值为 0.01% → 确认提醒触发和冷却机制生效
+7. **端到端**：App 运行中 → qtrade 持续监控 → 行情变化时终端实时更新 + 提醒
 
 ## 未来扩展方向
 

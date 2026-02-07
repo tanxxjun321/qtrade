@@ -650,10 +650,31 @@ async fn cmd_test_ocr(_config: AppConfig) -> Result<()> {
     let pid = AccessibilityReader::find_futu_pid()?;
     println!("  PID: {}", pid);
 
-    // 2. 查找窗口
+    // 2. 查找窗口（获取实际 GUI 进程 PID）
     println!("\n查找主窗口...");
-    let window_id = ocr::find_futu_window_id(pid)?;
-    println!("  窗口 ID: {}", window_id);
+    let win_info = ocr::find_futu_window(pid)?;
+    let window_id = win_info.id;
+    let gui_pid = win_info.owner_pid;
+    println!("  窗口 ID: {}  GUI PID: {}", window_id, gui_pid);
+
+    // 2.5 尝试 AX API 检测自选股表格区域（使用 GUI PID）
+    println!("\n[AX] 检测自选股表格区域...");
+    let grid_frame = match crate::futu::accessibility::find_watchlist_grid_frame(gui_pid) {
+        Ok(frame) => {
+            println!(
+                "  ✓ 检测到 GridFrame: x={:.1}% y={:.1}% w={:.1}% h={:.1}%",
+                frame.x * 100.0,
+                frame.y * 100.0,
+                frame.width * 100.0,
+                frame.height * 100.0,
+            );
+            Some(frame)
+        }
+        Err(e) => {
+            println!("  ✗ AX 检测失败: {}，将使用 Pass 1 OCR", e);
+            None
+        }
+    };
 
     // 3. 截图
     println!("\n截取窗口截图...");
@@ -664,32 +685,41 @@ async fn cmd_test_ocr(_config: AppConfig) -> Result<()> {
         objc2_core_graphics::CGImage::height(Some(&image)),
     );
 
-    // 4. Pass 1: 快速 OCR → 检测布局
-    println!("\n[Pass 1] 快速 OCR 检测布局...");
-    let t0 = std::time::Instant::now();
-    let fast_blocks = ocr::recognize_text_fast(&image)?;
-    let fast_ms = t0.elapsed().as_millis();
-    println!("  Fast OCR: {} 个文字块 ({} ms)", fast_blocks.len(), fast_ms);
+    let mut fast_ms: u128 = 0;
 
-    let layout = ocr::detect_layout(&fast_blocks);
-    println!(
-        "  自选股区域: x = {:.1}% ~ {:.1}%",
-        layout.watchlist_x.0 * 100.0,
-        layout.watchlist_x.1 * 100.0
-    );
-    if let Some((ql, qr)) = layout.quote_x {
-        println!(
-            "  报价详情区域: x = {:.1}% ~ {:.1}%",
-            ql * 100.0,
-            qr * 100.0
-        );
+    // 4. 布局检测：AX 优先，降级到 Pass 1
+    let watchlist_crop = if let Some(gf) = grid_frame {
+        println!("\n[AX] 使用 AX GridFrame 裁剪（跳过 Pass 1）...");
+        let x_range = (gf.x, (gf.x + gf.width).min(1.0));
+        let y_range = Some((gf.y, (gf.y + gf.height).min(1.0)));
+        ocr::crop_image_xy(&image, x_range, y_range)?
     } else {
-        println!("  报价详情区域: 未检测到");
-    }
+        println!("\n[Pass 1] 快速 OCR 检测布局...");
+        let t0 = std::time::Instant::now();
+        let fast_blocks = ocr::recognize_text_fast(&image)?;
+        fast_ms = t0.elapsed().as_millis();
+        println!("  Fast OCR: {} 个文字块 ({} ms)", fast_blocks.len(), fast_ms);
 
-    // 5. Pass 2: 裁剪 → 精确 OCR
-    println!("\n[Pass 2] 裁剪自选股区域 → 精确 OCR...");
-    let watchlist_crop = ocr::crop_image(&image, layout.watchlist_x)?;
+        let layout = ocr::detect_layout(&fast_blocks);
+        println!(
+            "  自选股区域: x = {:.1}% ~ {:.1}%",
+            layout.watchlist_x.0 * 100.0,
+            layout.watchlist_x.1 * 100.0
+        );
+        if let Some((ql, qr)) = layout.quote_x {
+            println!(
+                "  报价详情区域: x = {:.1}% ~ {:.1}%",
+                ql * 100.0,
+                qr * 100.0
+            );
+        } else {
+            println!("  报价详情区域: 未检测到");
+        }
+        ocr::crop_image(&image, layout.watchlist_x)?
+    };
+
+    // 5. Pass 2: 精确 OCR
+    println!("\n[Pass 2] 裁剪区域 → 精确 OCR...");
     println!(
         "  裁剪尺寸: {}x{}",
         objc2_core_graphics::CGImage::width(Some(&watchlist_crop)),
@@ -732,35 +762,20 @@ async fn cmd_test_ocr(_config: AppConfig) -> Result<()> {
         );
     }
 
-    // 8. 裁剪报价详情区域
-    if let Some(quote_range) = layout.quote_x {
-        println!("\n[Pass 2] 裁剪报价详情区域 → 精确 OCR...");
-        let quote_crop = ocr::crop_image(&image, quote_range)?;
+    if grid_frame.is_some() {
         println!(
-            "  裁剪尺寸: {}x{}",
-            objc2_core_graphics::CGImage::width(Some(&quote_crop)),
-            objc2_core_graphics::CGImage::height(Some(&quote_crop)),
+            "\n共解析 {} 条行情 (AX跳过Pass1 + Accurate {}ms)",
+            quotes.len(),
+            acc_ms,
         );
-
-        let t2 = std::time::Instant::now();
-        let quote_blocks = ocr::recognize_text(&quote_crop)?;
-        let q_ms = t2.elapsed().as_millis();
-        println!("  Accurate OCR: {} 个文字块 ({} ms)", quote_blocks.len(), q_ms);
-
-        let quote_rows = ocr::group_into_rows(&quote_blocks);
-        println!("\n--- 报价详情 ---");
-        for (i, row) in quote_rows.iter().enumerate() {
-            let line: String = row.iter().map(|b| b.text.as_str()).collect::<Vec<_>>().join(" | ");
-            println!("  行{:2}: {}", i, line);
-        }
+    } else {
+        println!(
+            "\n共解析 {} 条行情 (Fast {}ms + Accurate {}ms)",
+            quotes.len(),
+            fast_ms,
+            acc_ms
+        );
     }
-
-    println!(
-        "\n共解析 {} 条行情 (Fast {}ms + Accurate {}ms)",
-        quotes.len(),
-        fast_ms,
-        acc_ms
-    );
 
     Ok(())
 }

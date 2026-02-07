@@ -35,7 +35,7 @@ src/
 ├── models.rs                # 核心数据模型：StockCode, QuoteSnapshot, Signal, DailyKline, TimedSignal, AlertEvent
 ├── futu/
 │   ├── watchlist.rs         # 读取 plist 自选股（自动扫描用户目录）
-│   ├── accessibility.rs     # macOS AXUIElement 读取 App 窗口
+│   ├── accessibility.rs     # macOS AXUIElement 读取 App 窗口 + AX 表格 frame 检测
 │   ├── ocr.rs               # 窗口截图 + Vision OCR 文字识别
 │   └── openapi.rs           # FutuOpenD TCP 客户端（JSON 模式，含日K线 proto 3103）
 ├── data/
@@ -64,6 +64,11 @@ src/
   → AlertManager (规则评估 + 通知)
   → DashboardState (TUI 渲染)
 
+OCR 管线（OcrProvider）：
+  CGWindowList → owner_pid → AX API → GridFrame（归一化坐标）
+  截图 → [有 GridFrame: 跳过 Pass 1, 裁剪 X+Y] / [无: Pass 1 快速 OCR → 裁剪 X]
+  → Pass 2 精确 OCR → 分行 → 解析 → QuoteSnapshot
+
 日K线 → OpenAPI proto 3103 → DailyAnalysisEngine (日线指标 + 信号)
   → JSON 缓存 (~/.config/qtrade/kline_cache.json)
   → DashboardState (日线信号以 [日] 前缀显示)
@@ -73,11 +78,14 @@ src/
 
 ### OCR 数据源
 
+- **布局检测**：优先通过 AX API 获取 FTVGridView 精确 frame（identifier: `accessibility.futu.FTQWatchStocksViewController`），跳过 Pass 1 快速 OCR；AX 失败时降级为 Pass 1 关键词布局检测
 - **截图**：`CGWindowListCreateImage` 截取富途牛牛窗口（支持被遮挡窗口，Retina 分辨率）
+- **裁剪**：有 AX frame 时同时裁剪 X + Y（排除表头和侧边栏噪声），无 AX 时仅裁剪 X
 - **文字识别**：Apple Vision `VNRecognizeTextRequest`，语言 zh-Hans + en-US，精确模式
 - **行分组**：按归一化 Y 坐标聚类（0.5% 容差），行内按 X 排序
 - **解析**：拼接为 tab 分隔文本，复用 `try_parse_quote_text()` 解析
 - **异步**：CG/Vision 同步 API 通过 `tokio::task::spawn_blocking` 运行
+- **PID 处理**：`pgrep` 可能找到辅助进程 PID，通过 `CGWindowListCopyWindowInfo` 获取实际 GUI `owner_pid` 用于 AX API
 
 ### 日K线分析
 

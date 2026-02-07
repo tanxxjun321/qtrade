@@ -7,6 +7,7 @@ use anyhow::{Context, Result};
 use core_foundation::base::TCFType;
 use core_foundation::boolean::CFBoolean;
 use core_foundation::string::CFString;
+use std::ffi::c_void;
 use tracing::{debug, info, warn};
 
 use crate::models::QuoteSnapshot;
@@ -28,6 +29,13 @@ extern "C" {
         options: core_foundation::dictionary::CFDictionaryRef,
     ) -> bool;
 
+    // AXValue extraction (for AXPosition / AXSize)
+    fn AXValueGetValue(
+        value: core_foundation::base::CFTypeRef,
+        typ: u32,
+        out: *mut c_void,
+    ) -> bool;
+
     // CoreFoundation 类型检查
     fn CFGetTypeID(cf: core_foundation::base::CFTypeRef) -> core_foundation::base::CFTypeID;
     fn CFStringGetTypeID() -> core_foundation::base::CFTypeID;
@@ -40,6 +48,10 @@ extern "C" {
 
 // AX 错误码
 const AX_ERROR_SUCCESS: i32 = 0;
+
+// AXValue type constants
+const K_AX_VALUE_TYPE_CG_POINT: u32 = 1;
+const K_AX_VALUE_TYPE_CG_SIZE: u32 = 2;
 
 /// Accessibility API 数据提取器
 pub struct AccessibilityReader {
@@ -573,4 +585,168 @@ fn find_and_dump_tables(
             }
         }
     }
+}
+
+/// 自选股表格区域（归一化坐标 0.0-1.0，相对于窗口）
+#[derive(Debug, Clone, Copy)]
+pub struct GridFrame {
+    pub x: f64,
+    pub y: f64,
+    pub width: f64,
+    pub height: f64,
+}
+
+/// 递归搜索 AX 树，匹配 `AXIdentifier` 属性
+fn find_element_by_identifier(
+    element: core_foundation::base::CFTypeRef,
+    identifier: &str,
+    depth: usize,
+) -> Option<core_foundation::base::CFTypeRef> {
+    if depth > 10 || element.is_null() {
+        return None;
+    }
+
+    // 检查当前元素的 AXIdentifier
+    if let Ok(id_val) = get_ax_attribute(element, "AXIdentifier") {
+        if let Some(id_str) = cftype_to_string(id_val) {
+            if id_str == identifier {
+                return Some(element);
+            }
+        }
+    }
+
+    // 递归搜索子元素
+    if let Ok(children) = get_ax_attribute(element, "AXChildren") {
+        if let Some(children_array) = as_cf_array(children) {
+            let count = unsafe {
+                core_foundation::array::CFArrayGetCount(children_array as *const _)
+            };
+            for i in 0..count.min(100) {
+                let child = unsafe {
+                    core_foundation::array::CFArrayGetValueAtIndex(
+                        children_array as *const _,
+                        i,
+                    )
+                };
+                if let Some(found) = find_element_by_identifier(child, identifier, depth + 1) {
+                    return Some(found);
+                }
+            }
+        }
+    }
+
+    None
+}
+
+/// 从 AX 元素读取 AXPosition + AXSize，返回 (x, y, w, h) 屏幕坐标
+fn get_element_frame(
+    element: core_foundation::base::CFTypeRef,
+) -> Result<(f64, f64, f64, f64)> {
+    // AXPosition → CGPoint {x, y}
+    let pos_val = get_ax_attribute(element, "AXPosition")
+        .context("Failed to get AXPosition")?;
+
+    let mut point: [f64; 2] = [0.0, 0.0]; // {x, y}
+    let ok = unsafe {
+        AXValueGetValue(
+            pos_val,
+            K_AX_VALUE_TYPE_CG_POINT,
+            point.as_mut_ptr() as *mut c_void,
+        )
+    };
+    if !ok {
+        anyhow::bail!("AXValueGetValue failed for AXPosition");
+    }
+
+    // AXSize → CGSize {width, height}
+    let size_val = get_ax_attribute(element, "AXSize")
+        .context("Failed to get AXSize")?;
+
+    let mut size: [f64; 2] = [0.0, 0.0]; // {width, height}
+    let ok = unsafe {
+        AXValueGetValue(
+            size_val,
+            K_AX_VALUE_TYPE_CG_SIZE,
+            size.as_mut_ptr() as *mut c_void,
+        )
+    };
+    if !ok {
+        anyhow::bail!("AXValueGetValue failed for AXSize");
+    }
+
+    Ok((point[0], point[1], size[0], size[1]))
+}
+
+/// 查找自选股表格（FTVGridView）的归一化 frame
+///
+/// 通过 AX 树搜索 identifier 为 `accessibility.futu.FTQWatchStocksViewController` 的元素，
+/// 获取其屏幕坐标 frame，转换为窗口相对归一化坐标 (0.0-1.0)。
+pub fn find_watchlist_grid_frame(pid: i32) -> Result<GridFrame> {
+    let app_ref = unsafe { AXUIElementCreateApplication(pid) };
+    if app_ref.is_null() {
+        anyhow::bail!("Failed to create AXUIElement for PID {}", pid);
+    }
+
+    // 获取窗口列表
+    let windows = get_ax_attribute(app_ref, "AXWindows")
+        .context("Failed to get AXWindows")?;
+    let win_arr = as_cf_array(windows)
+        .context("AXWindows is not an array")?;
+    let win_count = unsafe {
+        core_foundation::array::CFArrayGetCount(win_arr as *const _)
+    };
+
+    if win_count == 0 {
+        anyhow::bail!("No windows found for PID {}", pid);
+    }
+
+    // 搜索每个窗口
+    let target_id = "accessibility.futu.FTQWatchStocksViewController";
+    for w in 0..win_count.min(5) {
+        let window = unsafe {
+            core_foundation::array::CFArrayGetValueAtIndex(win_arr as *const _, w)
+        };
+        if window.is_null() {
+            continue;
+        }
+
+        // 获取窗口 frame
+        let (win_x, win_y, win_w, win_h) = match get_element_frame(window) {
+            Ok(f) => f,
+            Err(_) => continue,
+        };
+
+        if win_w < 100.0 || win_h < 100.0 {
+            continue; // 跳过太小的窗口
+        }
+
+        // 在此窗口的子树中搜索目标元素
+        if let Some(grid_element) = find_element_by_identifier(window, target_id, 0) {
+            let (gx, gy, gw, gh) = get_element_frame(grid_element)
+                .context("Failed to get grid element frame")?;
+
+            // 转换为窗口相对归一化坐标
+            let norm_x = ((gx - win_x) / win_w).clamp(0.0, 1.0);
+            let norm_y = ((gy - win_y) / win_h).clamp(0.0, 1.0);
+            let norm_w = (gw / win_w).clamp(0.0, 1.0 - norm_x);
+            let norm_h = (gh / win_h).clamp(0.0, 1.0 - norm_y);
+
+            debug!(
+                "Grid frame: screen({:.0},{:.0},{:.0},{:.0}) window({:.0},{:.0},{:.0},{:.0}) normalized({:.3},{:.3},{:.3},{:.3})",
+                gx, gy, gw, gh, win_x, win_y, win_w, win_h, norm_x, norm_y, norm_w, norm_h
+            );
+
+            return Ok(GridFrame {
+                x: norm_x,
+                y: norm_y,
+                width: norm_w,
+                height: norm_h,
+            });
+        }
+    }
+
+    anyhow::bail!(
+        "未找到自选股表格元素 (identifier={})",
+        target_id
+    )
 }
