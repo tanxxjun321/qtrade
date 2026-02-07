@@ -219,36 +219,26 @@ fn render_quote_table(frame: &mut Frame, area: Rect, state: &DashboardState) {
         .map(|(i, q)| {
             let selected = i == state.selected_row;
 
-            // 美股非盘中时段，灰色小字（extended_price）才是实价
-            // 涨跌额/幅按实价重新计算（扩展时段相对收盘价）
-            let (display_price, display_change, display_change_pct) =
-                if q.code.market == Market::US {
-                    let session = crate::models::us_market_session();
-                    if session != crate::models::UsMarketSession::Regular {
-                        if let Some(ext) = q.extended_price {
-                            let chg = ext - q.last_price;
-                            let pct = if q.last_price > 0.0 {
-                                chg / q.last_price * 100.0
-                            } else {
-                                q.extended_change_pct.unwrap_or(0.0)
-                            };
-                            (ext, chg, pct)
-                        } else {
-                            (q.last_price, q.change, q.change_pct)
-                        }
-                    } else {
-                        (q.last_price, q.change, q.change_pct)
-                    }
-                } else {
-                    (q.last_price, q.change, q.change_pct)
-                };
+            // 美股非盘中时段：灰色小字(extended_price)才是实价，涨跌相对收盘价重算
+            let use_extended = q.code.market == Market::US
+                && crate::models::us_market_session() != crate::models::UsMarketSession::Regular
+                && q.extended_price.is_some();
 
-            let change_color = if display_change_pct > 0.0 {
-                if selected { Color::LightRed } else { Color::Red }
-            } else if display_change_pct < 0.0 {
-                if selected { Color::LightGreen } else { Color::Green }
+            let (display_price, display_change, display_change_pct) = if use_extended {
+                let ext = q.extended_price.unwrap();
+                let chg = ext - q.last_price;
+                let pct = if q.last_price > 0.0 { chg / q.last_price * 100.0 } else { 0.0 };
+                (ext, chg, pct)
             } else {
-                if selected { Color::White } else { Color::White }
+                (q.last_price, q.change, q.change_pct)
+            };
+
+            let change_color = match (display_change_pct > 0.0, display_change_pct < 0.0, selected) {
+                (true, _, true) => Color::LightRed,
+                (true, _, false) => Color::Red,
+                (_, true, true) => Color::LightGreen,
+                (_, true, false) => Color::Green,
+                _ => Color::White,
             };
 
             let signal_color = if selected { Color::LightMagenta } else { Color::Magenta };
