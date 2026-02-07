@@ -4,7 +4,7 @@
 
 use anyhow::Result;
 use tokio::sync::mpsc;
-use tracing::info;
+use tracing::{debug, info, warn};
 
 use std::collections::{HashMap, HashSet};
 
@@ -113,6 +113,12 @@ impl OpenApiProvider {
 pub struct OcrProvider {
     futu_pid: Option<i32>,
     connected: bool,
+    /// 上一次窗口尺寸，用于 resize 检测
+    last_window_size: Option<(f64, f64)>,
+    /// 非白名单代码的连续出现计数（连续 >=2 轮视为新增自选股）
+    unknown_code_streak: HashMap<StockCode, u32>,
+    /// 上一轮有效结果的代码集（用于清理 streak）
+    last_valid_codes: HashSet<StockCode>,
 }
 
 impl OcrProvider {
@@ -120,6 +126,9 @@ impl OcrProvider {
         Self {
             futu_pid: None,
             connected: false,
+            last_window_size: None,
+            unknown_code_streak: HashMap::new(),
+            last_valid_codes: HashSet::new(),
         }
     }
 
@@ -131,15 +140,69 @@ impl OcrProvider {
         Ok(())
     }
 
-    pub async fn get_quotes(&self, _codes: &[StockCode]) -> Result<Vec<QuoteSnapshot>> {
+    pub async fn get_quotes(&mut self, _codes: &[StockCode]) -> Result<Vec<QuoteSnapshot>> {
         let pid = self
             .futu_pid
             .ok_or_else(|| anyhow::anyhow!("Not connected. Call connect() first."))?;
 
         // CG 截图和 Vision OCR 都是同步 API，放到阻塞线程池
-        tokio::task::spawn_blocking(move || ocr::ocr_capture_and_parse(pid))
+        let result = tokio::task::spawn_blocking(move || ocr::ocr_capture_and_parse(pid))
             .await
-            .map_err(|e| anyhow::anyhow!("spawn_blocking failed: {}", e))?
+            .map_err(|e| anyhow::anyhow!("spawn_blocking failed: {}", e))??;
+
+        // Layer 1: 窗口 resize 检测 — 尺寸变化时跳过本轮
+        let new_size = (result.window_width, result.window_height);
+        if let Some(prev) = self.last_window_size {
+            if (prev.0 - new_size.0).abs() > 1.0 || (prev.1 - new_size.1).abs() > 1.0 {
+                warn!(
+                    "Window resized ({:.0}x{:.0} → {:.0}x{:.0}), skipping OCR result",
+                    prev.0, prev.1, new_size.0, new_size.1
+                );
+                self.last_window_size = Some(new_size);
+                return Ok(Vec::new());
+            }
+        }
+        self.last_window_size = Some(new_size);
+
+        // Layer 2: 自选股白名单 + 连续出现计数
+        // 每轮重新读取 plist 获取最新白名单
+        let whitelist = self.load_whitelist();
+        let mut accepted = Vec::new();
+        let mut this_round_codes = HashSet::new();
+
+        for q in result.quotes {
+            this_round_codes.insert(q.code.clone());
+            if whitelist.contains(&q.code) {
+                accepted.push(q);
+            } else {
+                // 不在白名单：累计连续出现次数
+                let count = self.unknown_code_streak.entry(q.code.clone()).or_insert(0);
+                *count += 1;
+                if *count >= 2 {
+                    debug!("Accepting non-whitelist code {} (seen {} consecutive times)", q.code, *count);
+                    accepted.push(q);
+                } else {
+                    debug!("Filtering non-whitelist code {} (first appearance)", q.code);
+                }
+            }
+        }
+
+        // 清理不再出现的 streak 计数
+        self.unknown_code_streak.retain(|code, _| this_round_codes.contains(code));
+        self.last_valid_codes = this_round_codes;
+
+        Ok(accepted)
+    }
+
+    /// 从 plist 读取当前自选股代码集作为白名单
+    fn load_whitelist(&self) -> HashSet<StockCode> {
+        match crate::futu::watchlist::load_watchlist(None, None) {
+            Ok(entries) => entries.into_iter().map(|e| e.code).collect(),
+            Err(e) => {
+                warn!("Failed to load watchlist for whitelist: {}", e);
+                HashSet::new()
+            }
+        }
     }
 
     pub fn name(&self) -> &str {
