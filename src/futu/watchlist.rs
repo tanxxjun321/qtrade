@@ -120,6 +120,16 @@ pub fn read_watchlist(plist_path: &Path) -> Result<Vec<WatchlistEntry>> {
     parse_watchlist_plist(&value)
 }
 
+/// 轻量读取：只返回 plist 路径和股票代码集合（不读 StockDB），供白名单过滤用
+pub fn load_watchlist_codes() -> Result<(PathBuf, Vec<StockCode>)> {
+    let base_path = detect_futu_data_path()?;
+    let user_dir = find_user_dir(&base_path, None)?;
+    let plist_path = user_dir.join(WATCHLIST_FILENAME);
+    let entries = read_watchlist(&plist_path)?;
+    let codes = entries.into_iter().map(|e| e.code).collect();
+    Ok((plist_path, codes))
+}
+
 /// 一站式读取：自动检测路径 + 读取自选股 + 填充名称
 pub fn load_watchlist(
     data_path: Option<&str>,
@@ -137,24 +147,14 @@ pub fn load_watchlist(
 
     // 从 StockDB 填充股票名称
     let db_path = base_path.join(STOCK_DB_PATH);
-    if db_path.exists() {
-        match load_stock_names(&db_path) {
-            Ok(names) => {
-                let mut matched = 0;
-                for entry in &mut entries {
-                    if let Some(name) = names.get(&entry.stock_id) {
-                        entry.name = name.clone();
-                        matched += 1;
-                    }
-                }
-                info!("Filled {} / {} stock names from StockDB", matched, entries.len());
-            }
-            Err(e) => {
-                warn!("Failed to read StockDB: {}", e);
-            }
-        }
-    } else {
-        debug!("StockDB not found at: {}", db_path.display());
+    if let Some(names) = db_path.exists()
+        .then(|| load_stock_names(&db_path))
+        .and_then(|r| r.map_err(|e| warn!("Failed to read StockDB: {}", e)).ok())
+    {
+        let matched = entries.iter_mut()
+            .filter_map(|e| names.get(&e.stock_id).map(|n| e.name = n.clone()))
+            .count();
+        info!("Filled {} / {} stock names from StockDB", matched, entries.len());
     }
 
     Ok(entries)
