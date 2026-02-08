@@ -7,6 +7,8 @@ use tokio::sync::mpsc;
 use tracing::{debug, info, warn};
 
 use std::collections::{HashMap, HashSet};
+use std::path::PathBuf;
+use std::time::SystemTime;
 
 use crate::config::AppConfig;
 use crate::futu::accessibility::{AccessibilityReader, GridFrame};
@@ -121,10 +123,8 @@ pub struct OcrProvider {
     last_image_hash: String,
     /// 上一轮有效 quotes 缓存（图像未变化时复用）
     last_quotes: Vec<QuoteSnapshot>,
-    /// 非白名单代码的连续出现计数（连续 >=2 轮视为新增自选股）
-    unknown_code_streak: HashMap<StockCode, u32>,
-    /// 上一轮有效结果的代码集（用于清理 streak）
-    last_valid_codes: HashSet<StockCode>,
+    /// 白名单缓存：(plist 路径, mtime, 精确白名单, Unknown 市场的 code 字符串集)
+    whitelist_cache: Option<(PathBuf, SystemTime, HashSet<StockCode>, HashSet<String>)>,
     /// AX API 检测到的自选股表格区域（归一化坐标），用于跳过 Pass 1 快速 OCR
     cached_grid_frame: Option<GridFrame>,
 }
@@ -138,8 +138,7 @@ impl OcrProvider {
             last_window_size: None,
             last_image_hash: String::new(),
             last_quotes: Vec::new(),
-            unknown_code_streak: HashMap::new(),
-            last_valid_codes: HashSet::new(),
+            whitelist_cache: None,
             cached_grid_frame: None,
         }
     }
@@ -236,42 +235,13 @@ impl OcrProvider {
         }
         self.last_window_size = Some(new_size);
 
-        // Layer 2: 自选股白名单 + 连续出现计数
-        // 每轮重新读取 plist 获取最新白名单
-        let whitelist = self.load_whitelist();
-        // Unknown 市场条目的 code 字符串集合（用于模糊匹配 OCR 识别的市场）
-        let unknown_codes: HashSet<String> = whitelist
-            .iter()
-            .filter(|c| c.market == Market::Unknown)
-            .map(|c| c.code.clone())
-            .collect();
-        let mut accepted = Vec::new();
-        let mut this_round_codes = HashSet::new();
+        // Layer 2: 自选股白名单过滤（plist 变化时才重新加载）
+        let (whitelist, unknown_codes) = self.get_whitelist();
         let ocr_total = result.quotes.len();
-
-        for q in result.quotes {
-            this_round_codes.insert(q.code.clone());
-            // 精确匹配，或 code 字符串匹配白名单中的 Unknown 市场条目
-            if whitelist.contains(&q.code) || unknown_codes.contains(&q.code.code) {
-                accepted.push(q);
-            } else {
-                // 不在白名单：累计连续出现次数
-                let count = self.unknown_code_streak.entry(q.code.clone()).or_insert(0);
-                *count += 1;
-                if *count >= 2 {
-                    debug!("Accepting non-whitelist code {} (seen {} consecutive times)", q.code, *count);
-                    accepted.push(q);
-                } else {
-                    debug!("Filtering non-whitelist code {} (first appearance)", q.code);
-                }
-            }
-        }
-
-        // 清理不再出现的 streak 计数
+        let accepted: Vec<_> = result.quotes.into_iter()
+            .filter(|q| whitelist.contains(&q.code) || unknown_codes.contains(&q.code.code))
+            .collect();
         let filtered_count = ocr_total - accepted.len();
-        self.unknown_code_streak.retain(|code, _| this_round_codes.contains(code));
-        self.last_valid_codes = this_round_codes;
-
         if filtered_count > 0 {
             info!(
                 "Whitelist: {} accepted, {} filtered (of {} OCR)",
@@ -279,21 +249,50 @@ impl OcrProvider {
             );
         }
 
-        // 缓存本轮结果（图像未变化时复用）
         self.last_quotes = accepted.clone();
-
         Ok(accepted)
     }
 
-    /// 从 plist 读取当前自选股代码集作为白名单
-    fn load_whitelist(&self) -> HashSet<StockCode> {
-        match crate::futu::watchlist::load_watchlist(None, None) {
-            Ok(entries) => entries.into_iter().map(|e| e.code).collect(),
-            Err(e) => {
-                warn!("Failed to load watchlist for whitelist: {}", e);
-                HashSet::new()
+    /// 获取白名单（plist mtime 未变时返回缓存）
+    fn get_whitelist(&mut self) -> (&HashSet<StockCode>, &HashSet<String>) {
+        let need_reload = match &self.whitelist_cache {
+            Some((path, cached_mtime, _, _)) => {
+                path.metadata()
+                    .and_then(|m| m.modified())
+                    .map(|mtime| mtime != *cached_mtime)
+                    .unwrap_or(true)
+            }
+            None => true,
+        };
+
+        if need_reload {
+            match crate::futu::watchlist::load_watchlist_codes() {
+                Ok((path, codes)) => {
+                    let mtime = path.metadata()
+                        .and_then(|m| m.modified())
+                        .unwrap_or(SystemTime::UNIX_EPOCH);
+                    let unknown_codes: HashSet<String> = codes.iter()
+                        .filter(|c| c.market == Market::Unknown)
+                        .map(|c| c.code.clone())
+                        .collect();
+                    let whitelist: HashSet<StockCode> = codes.into_iter().collect();
+                    info!("Whitelist reloaded: {} codes", whitelist.len());
+                    self.whitelist_cache = Some((path, mtime, whitelist, unknown_codes));
+                }
+                Err(e) => {
+                    warn!("Failed to load watchlist for whitelist: {}", e);
+                    if self.whitelist_cache.is_none() {
+                        self.whitelist_cache = Some((
+                            PathBuf::new(), SystemTime::UNIX_EPOCH,
+                            HashSet::new(), HashSet::new(),
+                        ));
+                    }
+                }
             }
         }
+
+        let cache = self.whitelist_cache.as_ref().unwrap();
+        (&cache.2, &cache.3)
     }
 
     pub fn name(&self) -> &str {
