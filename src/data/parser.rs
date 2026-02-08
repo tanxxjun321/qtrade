@@ -162,18 +162,25 @@ pub fn parse_stock_code(s: &str) -> Option<StockCode> {
         }
     }
 
-    // 美股字母代码：1-5 个字母（可带前导/尾随点号，如 .DJI, NVDA.）
+    // 美股字母代码：1-5 个字母（可带前导点号如 .DJI/.IXIC 表示指数，尾随点号为 OCR 噪声）
     // OCR 可能输出混合大小写（如 "Li" → "LI"），统一转大写
     // 排除市场前缀 HK/SH/SZ/US，这些是市场标识不是股票代码
     {
-        let stripped = s.trim_matches('.');
-        if !stripped.is_empty()
-            && stripped.len() <= 5
-            && stripped.chars().all(|c| c.is_ascii_alphabetic())
+        let stripped = s.trim_end_matches('.');
+        let alpha_part = stripped.trim_start_matches('.');
+        if !alpha_part.is_empty()
+            && alpha_part.len() <= 5
+            && alpha_part.chars().all(|c| c.is_ascii_alphabetic())
         {
-            let upper = stripped.to_ascii_uppercase();
+            let upper = alpha_part.to_ascii_uppercase();
             if !matches!(upper.as_str(), "HK" | "SH" | "SZ" | "US" | "SG" | "FX") {
-                return Some(StockCode::new(Market::US, &upper));
+                // 保留前导点号（.DJI/.IXIC 等指数代码）
+                let code = if stripped.starts_with('.') {
+                    format!(".{}", upper)
+                } else {
+                    upper
+                };
+                return Some(StockCode::new(Market::US, &code));
             }
         }
     }
@@ -290,11 +297,16 @@ mod tests {
         assert_eq!(code.market, Market::US);
         assert_eq!(code.code, "TSLA");
 
-        // Index with dot prefix/suffix
+        // Index with dot prefix (preserved)
         let code = parse_stock_code(".DJI").unwrap();
         assert_eq!(code.market, Market::US);
-        assert_eq!(code.code, "DJI");
+        assert_eq!(code.code, ".DJI");
 
+        let code = parse_stock_code(".IXIC").unwrap();
+        assert_eq!(code.market, Market::US);
+        assert_eq!(code.code, ".IXIC");
+
+        // Trailing dot is OCR noise, stripped
         let code = parse_stock_code("NVDA.").unwrap();
         assert_eq!(code.market, Market::US);
         assert_eq!(code.code, "NVDA");
