@@ -9,9 +9,10 @@ mod ui;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
+use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::{mpsc, Mutex};
+use tokio::sync::{mpsc, watch, Mutex};
 use tracing::{info, warn};
 
 use crate::alerts::manager::AlertManager;
@@ -146,6 +147,18 @@ fn cmd_debug(_config: AppConfig) -> Result<()> {
     Ok(())
 }
 
+/// 过滤 watchlist entries：去掉 800xxx 内部索引和 Unknown 市场
+fn filter_stock_codes(watchlist: &[models::WatchlistEntry]) -> Vec<StockCode> {
+    watchlist
+        .iter()
+        .filter(|e| {
+            !e.code.code.starts_with("800")
+                && e.code.market != crate::models::Market::Unknown
+        })
+        .map(|e| e.code.clone())
+        .collect()
+}
+
 /// 启动盯盘系统
 async fn cmd_start(config: AppConfig) -> Result<()> {
     info!("qtrade 量化盯盘系统启动");
@@ -162,17 +175,18 @@ async fn cmd_start(config: AppConfig) -> Result<()> {
 
     info!("已加载 {} 只自选股", watchlist.len());
 
-    // 过滤掉 800xxx 内部索引代码和 Unknown 市场（CNmain 等非股票条目）
-    let stock_codes: Vec<StockCode> = watchlist
-        .iter()
-        .filter(|e| {
-            !e.code.code.starts_with("800")
-                && e.code.market != crate::models::Market::Unknown
-        })
-        .map(|e| e.code.clone())
-        .collect();
-
+    let stock_codes = filter_stock_codes(&watchlist);
     info!("可订阅股票: {} 只（已过滤内部索引代码）", stock_codes.len());
+
+    // 检测 plist 路径（用于 mtime 监测）
+    let plist_path = futu::watchlist::detect_plist_path(
+        config.futu.data_path.as_deref(),
+        config.futu.user_id.as_deref(),
+    )?;
+    info!("Plist path for monitoring: {}", plist_path.display());
+
+    // 创建 watch channel 广播 watchlist 变化
+    let (watch_tx, watch_rx) = watch::channel(stock_codes.clone());
 
     // 创建数据提供者
     let mut provider = DataProviderKind::from_config(&config);
@@ -256,38 +270,175 @@ async fn cmd_start(config: AppConfig) -> Result<()> {
         }
     }
 
-    // 数据采集任务
+    // Plist 监测任务（3s 轮询 mtime）
+    let monitor_plist_path = plist_path.clone();
+    let monitor_config_data_path = config.futu.data_path.clone();
+    let monitor_config_user_id = config.futu.user_id.clone();
+    let monitor_engine = engine.clone();
+    let monitor_daily_engine = daily_engine.clone();
+    let monitor_dash = dash_state.clone();
+    let monitor_watch_tx = watch_tx.clone();
+    let monitor_handle = tokio::spawn(async move {
+        let mut last_mtime = monitor_plist_path
+            .metadata()
+            .and_then(|m| m.modified())
+            .unwrap_or(std::time::UNIX_EPOCH);
+
+        loop {
+            tokio::time::sleep(Duration::from_secs(3)).await;
+
+            let current_mtime = match monitor_plist_path.metadata().and_then(|m| m.modified()) {
+                Ok(mt) => mt,
+                Err(_) => continue,
+            };
+
+            if current_mtime == last_mtime {
+                continue;
+            }
+            last_mtime = current_mtime;
+            info!("Plist mtime changed, reloading watchlist...");
+
+            // 重新加载 watchlist
+            let new_watchlist = match futu::watchlist::load_watchlist(
+                monitor_config_data_path.as_deref(),
+                monitor_config_user_id.as_deref(),
+            ) {
+                Ok(w) => w,
+                Err(e) => {
+                    warn!("Failed to reload watchlist: {}", e);
+                    continue;
+                }
+            };
+
+            let new_codes = filter_stock_codes(&new_watchlist);
+            let old_codes: Vec<StockCode> = monitor_watch_tx.borrow().clone();
+
+            let old_set: HashSet<&StockCode> = old_codes.iter().collect();
+            let new_set: HashSet<&StockCode> = new_codes.iter().collect();
+
+            let added: Vec<&StockCode> = new_set.difference(&old_set).copied().collect();
+            let removed: Vec<&StockCode> = old_set.difference(&new_set).copied().collect();
+
+            if added.is_empty() && removed.is_empty() {
+                info!("Watchlist codes unchanged after reload");
+                continue;
+            }
+
+            info!(
+                "Watchlist changed: +{} added, -{} removed",
+                added.len(),
+                removed.len()
+            );
+
+            // 处理删除
+            if !removed.is_empty() {
+                let removed_codes: Vec<StockCode> = removed.iter().map(|c| (*c).clone()).collect();
+                // 清理 tick 分析引擎
+                {
+                    let mut eng = monitor_engine.lock().await;
+                    for code in &removed_codes {
+                        eng.remove_stock(code);
+                    }
+                }
+                // 清理日线分析引擎
+                {
+                    let mut de = monitor_daily_engine.lock().await;
+                    de.remove_stocks(&removed_codes);
+                }
+                for code in &removed_codes {
+                    info!("Removed stock: {}", code.display_code());
+                }
+            }
+
+            // 同步 dashboard
+            {
+                let filtered_entries: Vec<_> = new_watchlist
+                    .iter()
+                    .filter(|e| {
+                        !e.code.code.starts_with("800")
+                            && e.code.market != crate::models::Market::Unknown
+                    })
+                    .cloned()
+                    .collect();
+                let mut state = monitor_dash.lock().await;
+                state.sync_watchlist(&new_codes, &filtered_entries);
+            }
+
+            if !added.is_empty() {
+                for code in &added {
+                    info!("Added stock: {}", code.display_code());
+                }
+            }
+
+            // 广播新的 stock_codes
+            let _ = monitor_watch_tx.send(new_codes);
+        }
+    });
+
+    // 数据采集任务（使用 watch channel 感知 watchlist 变化）
     let refresh_interval = Duration::from_secs(config.data_source.refresh_interval_secs);
-    let codes_for_fetch = stock_codes.clone();
     let dash_for_fetch = dash_state.clone();
+    let mut watch_rx_fetch = watch_rx.clone();
     let fetch_handle = tokio::spawn(async move {
         let mut interval = tokio::time::interval(refresh_interval);
+        let mut current_codes = watch_rx_fetch.borrow_and_update().clone();
+
         loop {
-            interval.tick().await;
-            match provider.get_quotes(&codes_for_fetch).await {
-                Ok(quotes) => {
-                    // 清除错误
-                    {
-                        let mut state = dash_for_fetch.lock().await;
-                        state.last_error = None;
-                    }
-                    if !quotes.is_empty() {
-                        if quote_tx.send(quotes).await.is_err() {
-                            break;
+            tokio::select! {
+                _ = interval.tick() => {
+                    match provider.get_quotes(&current_codes).await {
+                        Ok(quotes) => {
+                            {
+                                let mut state = dash_for_fetch.lock().await;
+                                state.last_error = None;
+                            }
+                            if !quotes.is_empty() {
+                                if quote_tx.send(quotes).await.is_err() {
+                                    break;
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            let msg = format!("{}", e);
+                            warn!("数据获取失败: {}", msg);
+                            let mut state = dash_for_fetch.lock().await;
+                            state.last_error = Some(msg);
                         }
                     }
                 }
-                Err(e) => {
-                    let msg = format!("{}", e);
-                    warn!("数据获取失败: {}", msg);
-                    let mut state = dash_for_fetch.lock().await;
-                    state.last_error = Some(msg);
+                result = watch_rx_fetch.changed() => {
+                    if result.is_err() {
+                        break; // sender dropped
+                    }
+                    let new_codes = watch_rx_fetch.borrow_and_update().clone();
+                    let old_set: HashSet<StockCode> = current_codes.iter().cloned().collect();
+                    let new_set: HashSet<StockCode> = new_codes.iter().cloned().collect();
+
+                    let removed: Vec<StockCode> = old_set.difference(&new_set).cloned().collect();
+                    let added: Vec<StockCode> = new_set.difference(&old_set).cloned().collect();
+
+                    // 退订已删股票
+                    if !removed.is_empty() {
+                        if let Err(e) = provider.unsubscribe(&removed).await {
+                            warn!("Unsubscribe failed: {}", e);
+                        }
+                    }
+
+                    // 订阅新增股票
+                    if !added.is_empty() {
+                        if let Err(e) = provider.subscribe(&added).await {
+                            warn!("Subscribe new stocks failed: {}", e);
+                        }
+                    }
+
+                    current_codes = new_codes;
+                    info!("Fetch loop updated: {} stocks", current_codes.len());
                 }
             }
         }
     });
 
-    // 日K线异步获取任务（启动后立即获取，之后定时刷新）
+    // 日K线异步获取任务（使用 watch channel 感知新增股票）
     let daily_refresh_handle = if config.analysis.daily_kline_enabled {
         let daily_engine_clone = daily_engine.clone();
         let dash_for_daily = dash_state.clone();
@@ -295,31 +446,73 @@ async fn cmd_start(config: AppConfig) -> Result<()> {
         let futu_port = config.futu.opend_port;
         let daily_days = config.analysis.daily_kline_days;
         let refresh_mins = config.analysis.daily_kline_refresh_minutes;
+        let mut watch_rx_daily = watch_rx.clone();
 
-        // 日K线通过独立连接拉取，不依赖实时行情的订阅状态
-        let daily_codes = stock_codes.clone();
-        info!("Daily K-line target: {} stocks", daily_codes.len());
+        info!("Daily K-line target: {} stocks", stock_codes.len());
 
         Some(tokio::spawn(async move {
-            let mut first = true;
-            loop {
-                if !first {
-                    if refresh_mins == 0 {
-                        return; // 仅启动时获取一次
-                    }
-                    tokio::time::sleep(Duration::from_secs(refresh_mins * 60)).await;
-                }
-                first = false;
+            let mut current_codes = watch_rx_daily.borrow_and_update().clone();
 
-                run_daily_kline_cycle(
-                    &futu_host,
-                    futu_port,
-                    &daily_codes,
-                    &daily_engine_clone,
-                    &dash_for_daily,
-                    daily_days,
-                )
-                .await;
+            // 首次立即拉取
+            run_daily_kline_cycle(
+                &futu_host,
+                futu_port,
+                &current_codes,
+                &daily_engine_clone,
+                &dash_for_daily,
+                daily_days,
+            )
+            .await;
+
+            loop {
+                // 等待定时刷新或 watchlist 变更
+                let sleep_duration = if refresh_mins == 0 {
+                    // 不定时刷新，但仍监听 watchlist 变更
+                    Duration::from_secs(u64::MAX / 2)
+                } else {
+                    Duration::from_secs(refresh_mins * 60)
+                };
+
+                tokio::select! {
+                    _ = tokio::time::sleep(sleep_duration) => {
+                        // 定时全量刷新
+                        current_codes = watch_rx_daily.borrow_and_update().clone();
+                        run_daily_kline_cycle(
+                            &futu_host,
+                            futu_port,
+                            &current_codes,
+                            &daily_engine_clone,
+                            &dash_for_daily,
+                            daily_days,
+                        )
+                        .await;
+                    }
+                    result = watch_rx_daily.changed() => {
+                        if result.is_err() {
+                            break; // sender dropped
+                        }
+                        let new_codes = watch_rx_daily.borrow_and_update().clone();
+                        let old_set: HashSet<StockCode> = current_codes.iter().cloned().collect();
+                        let new_set: HashSet<StockCode> = new_codes.iter().cloned().collect();
+
+                        let added: Vec<StockCode> = new_set.difference(&old_set).cloned().collect();
+                        current_codes = new_codes;
+
+                        // 仅对新增股票拉取日K线
+                        if !added.is_empty() {
+                            info!("Daily kline: fetching {} newly added stocks", added.len());
+                            run_daily_kline_cycle(
+                                &futu_host,
+                                futu_port,
+                                &added,
+                                &daily_engine_clone,
+                                &dash_for_daily,
+                                daily_days,
+                            )
+                            .await;
+                        }
+                    }
+                }
             }
         }))
     } else {
@@ -386,6 +579,7 @@ async fn cmd_start(config: AppConfig) -> Result<()> {
     ui::dashboard::restore_terminal()?;
     fetch_handle.abort();
     analysis_handle.abort();
+    monitor_handle.abort();
     if let Some(h) = daily_refresh_handle {
         h.abort();
     }

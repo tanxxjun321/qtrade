@@ -75,6 +75,11 @@ impl OpenApiProvider {
         self.client.subscribe(codes, &[1]).await
     }
 
+    /// 退订行情
+    pub async fn unsubscribe(&mut self, codes: &[StockCode]) -> Result<()> {
+        self.client.unsubscribe(codes, &[1]).await
+    }
+
     pub async fn get_quotes(&mut self, codes: &[StockCode]) -> Result<Vec<QuoteSnapshot>> {
         self.client.get_basic_quotes(codes).await
     }
@@ -346,6 +351,15 @@ impl DataProviderKind {
         match self {
             DataProviderKind::Accessibility(_) => Ok(()),
             DataProviderKind::OpenApi(p) => p.subscribe(codes).await,
+            DataProviderKind::Ocr(_) => Ok(()),
+        }
+    }
+
+    /// 退订行情（OpenAPI 模式释放订阅 slot）
+    pub async fn unsubscribe(&mut self, codes: &[StockCode]) -> Result<()> {
+        match self {
+            DataProviderKind::Accessibility(_) => Ok(()),
+            DataProviderKind::OpenApi(p) => p.unsubscribe(codes).await,
             DataProviderKind::Ocr(_) => Ok(()),
         }
     }

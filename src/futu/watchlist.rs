@@ -120,6 +120,19 @@ pub fn read_watchlist(plist_path: &Path) -> Result<Vec<WatchlistEntry>> {
     parse_watchlist_plist(&value)
 }
 
+/// 检测 plist 文件完整路径（供 mtime 监测用）
+pub fn detect_plist_path(
+    data_path: Option<&str>,
+    user_id: Option<&str>,
+) -> Result<PathBuf> {
+    let base_path = match data_path {
+        Some(p) => PathBuf::from(p),
+        None => detect_futu_data_path()?,
+    };
+    let user_dir = find_user_dir(&base_path, user_id)?;
+    Ok(user_dir.join(WATCHLIST_FILENAME))
+}
+
 /// 轻量读取：只返回 plist 路径和股票代码集合（不读 StockDB），供白名单过滤用
 pub fn load_watchlist_codes() -> Result<(PathBuf, Vec<StockCode>)> {
     let base_path = detect_futu_data_path()?;

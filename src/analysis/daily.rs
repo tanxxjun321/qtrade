@@ -219,6 +219,18 @@ impl DailyAnalysisEngine {
         }
     }
 
+    /// 移除指定股票的所有数据，并持久化
+    pub fn remove_stocks(&mut self, codes: &[StockCode]) {
+        for code in codes {
+            self.klines.remove(code);
+            self.last_fetched.remove(code);
+            self.indicators.remove(code);
+            self.prev_indicators.remove(code);
+            self.signals.remove(code);
+        }
+        self.save_cache();
+    }
+
     /// 获取已缓存的股票数量
     pub fn stock_count(&self) -> usize {
         self.klines.len()
