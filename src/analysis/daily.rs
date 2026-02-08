@@ -301,6 +301,8 @@ fn parse_stock_key(key: &str) -> Option<StockCode> {
         "SH" => crate::models::Market::SH,
         "SZ" => crate::models::Market::SZ,
         "US" => crate::models::Market::US,
+        "SG" => crate::models::Market::SG,
+        "FX" => crate::models::Market::FX,
         _ => return None,
     };
     Some(StockCode::new(market, code))

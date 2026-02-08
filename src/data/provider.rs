@@ -197,6 +197,16 @@ impl OcrProvider {
             .futu_pid
             .ok_or_else(|| anyhow::anyhow!("Not connected. Call connect() first."))?;
 
+        // 每轮重新探测 GridFrame（用户可能拖动了内部面板分割线）
+        if let Some(gp) = self.gui_pid {
+            match crate::futu::accessibility::find_watchlist_grid_frame(gp) {
+                Ok(frame) => self.cached_grid_frame = Some(frame),
+                Err(e) => {
+                    debug!("GridFrame refresh failed, using cached: {}", e);
+                }
+            }
+        }
+
         // CG 截图和 Vision OCR 都是同步 API，放到阻塞线程池
         let prev_hash = self.last_image_hash.clone();
         let grid_frame = self.cached_grid_frame;
@@ -212,18 +222,15 @@ impl OcrProvider {
             return Ok(self.last_quotes.clone());
         }
 
-        // Layer 1: 窗口 resize 检测 — 尺寸变化时跳过本轮 + 重新探测 grid frame
+        // 窗口 resize 检测 — 整体窗口尺寸变化时跳过本轮（截图可能不一致）
         let new_size = (result.window_width, result.window_height);
         if let Some(prev) = self.last_window_size {
             if (prev.0 - new_size.0).abs() > 1.0 || (prev.1 - new_size.1).abs() > 1.0 {
                 warn!(
-                    "Window resized ({:.0}x{:.0} → {:.0}x{:.0}), skipping OCR result + re-detecting grid",
+                    "Window resized ({:.0}x{:.0} → {:.0}x{:.0}), skipping OCR result",
                     prev.0, prev.1, new_size.0, new_size.1
                 );
                 self.last_window_size = Some(new_size);
-                if let Some(gp) = self.gui_pid {
-                    self.detect_grid_frame(gp);
-                }
                 return Ok(Vec::new());
             }
         }
@@ -232,13 +239,20 @@ impl OcrProvider {
         // Layer 2: 自选股白名单 + 连续出现计数
         // 每轮重新读取 plist 获取最新白名单
         let whitelist = self.load_whitelist();
+        // Unknown 市场条目的 code 字符串集合（用于模糊匹配 OCR 识别的市场）
+        let unknown_codes: HashSet<String> = whitelist
+            .iter()
+            .filter(|c| c.market == Market::Unknown)
+            .map(|c| c.code.clone())
+            .collect();
         let mut accepted = Vec::new();
         let mut this_round_codes = HashSet::new();
         let ocr_total = result.quotes.len();
 
         for q in result.quotes {
             this_round_codes.insert(q.code.clone());
-            if whitelist.contains(&q.code) {
+            // 精确匹配，或 code 字符串匹配白名单中的 Unknown 市场条目
+            if whitelist.contains(&q.code) || unknown_codes.contains(&q.code.code) {
                 accepted.push(q);
             } else {
                 // 不在白名单：累计连续出现次数

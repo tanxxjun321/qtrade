@@ -125,6 +125,8 @@ pub fn parse_stock_code(s: &str) -> Option<StockCode> {
             "SH" => Some(Market::SH),
             "SZ" => Some(Market::SZ),
             "US" => Some(Market::US),
+            "SG" => Some(Market::SG),
+            "FX" => Some(Market::FX),
             _ => None,
         };
 
@@ -135,6 +137,8 @@ pub fn parse_stock_code(s: &str) -> Option<StockCode> {
                 "SH" => Some(Market::SH),
                 "SZ" => Some(Market::SZ),
                 "US" => Some(Market::US),
+                "SG" => Some(Market::SG),
+                "FX" => Some(Market::FX),
                 _ => None,
             };
             if let Some(m) = market2 {
@@ -147,7 +151,9 @@ pub fn parse_stock_code(s: &str) -> Option<StockCode> {
         if let Some(m) = market {
             if !code.is_empty()
                 && (code.chars().all(|c| c.is_ascii_digit())
-                    || (m == Market::US && code.chars().all(|c| c.is_ascii_alphabetic())))
+                    || (m == Market::US && code.chars().all(|c| c.is_ascii_alphabetic()))
+                    || (m == Market::SG && code.chars().all(|c| c.is_ascii_alphanumeric()))
+                    || (m == Market::FX && code.chars().all(|c| c.is_ascii_alphanumeric())))
             {
                 // OCR 可能输出混合大小写，US ticker 统一转大写
                 let normalized = if m == Market::US { code.to_ascii_uppercase() } else { code.to_string() };
@@ -166,7 +172,7 @@ pub fn parse_stock_code(s: &str) -> Option<StockCode> {
             && stripped.chars().all(|c| c.is_ascii_alphabetic())
         {
             let upper = stripped.to_ascii_uppercase();
-            if !matches!(upper.as_str(), "HK" | "SH" | "SZ" | "US") {
+            if !matches!(upper.as_str(), "HK" | "SH" | "SZ" | "US" | "SG" | "FX") {
                 return Some(StockCode::new(Market::US, &upper));
             }
         }
@@ -184,6 +190,8 @@ pub fn parse_stock_code(s: &str) -> Option<StockCode> {
             Market::SZ // 深市主板/创业板
         } else if s.starts_with('1') {
             Market::SZ // 深市 ETF/基金 (159xxx, 15xxxx)
+        } else if s.starts_with('8') {
+            Market::HK // 港股指数 (800000=恒生指数, 800700=恒生科技指数 等)
         } else {
             return None;
         };
@@ -290,6 +298,25 @@ mod tests {
         let code = parse_stock_code("NVDA.").unwrap();
         assert_eq!(code.market, Market::US);
         assert_eq!(code.code, "NVDA");
+
+        // HK index codes
+        let code = parse_stock_code("800000").unwrap();
+        assert_eq!(code.market, Market::HK);
+        assert_eq!(code.code, "800000");
+
+        let code = parse_stock_code("800700").unwrap();
+        assert_eq!(code.market, Market::HK);
+        assert_eq!(code.code, "800700");
+
+        // SG market
+        let code = parse_stock_code("SG.D05").unwrap();
+        assert_eq!(code.market, Market::SG);
+        assert_eq!(code.code, "D05");
+
+        // FX should NOT be parsed as US ticker
+        assert!(parse_stock_code("FX").is_none());
+        // SG as standalone should NOT be parsed as US ticker
+        assert!(parse_stock_code("SG").is_none());
     }
 
     #[test]

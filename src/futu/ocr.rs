@@ -454,11 +454,13 @@ pub fn parse_watchlist_from_ocr(rows: &[Vec<&OcrTextBlock>]) -> Vec<QuoteSnapsho
     let mut pending_name: Option<String> = None;
     let mut pending_price: Option<f64> = None;
     let mut pending_change_pct: Option<f64> = None;
+    let mut pending_change_amt: Option<f64> = None;
 
     for row in rows {
         let mut row_code: Option<StockCode> = None;
         let mut row_price: Option<f64> = None;
         let mut row_change_pct: Option<f64> = None;
+        let mut row_change_amt: Option<f64> = None;
         let mut row_market: Option<Market> = None;
         let mut row_name: Option<String> = None;
 
@@ -466,7 +468,8 @@ pub fn parse_watchlist_from_ocr(rows: &[Vec<&OcrTextBlock>]) -> Vec<QuoteSnapsho
             let text = block.text.trim();
 
             // 尝试解析为股票代码
-            if row_code.is_none() {
+            // 两行配对格式中代码在独立行，同一行有市场前缀时数字是价格不是代码
+            if row_code.is_none() && row_market.is_none() {
                 if let Some(sc) = parse_stock_code(text) {
                     row_code = Some(sc);
                     continue;
@@ -477,6 +480,15 @@ pub fn parse_watchlist_from_ocr(rows: &[Vec<&OcrTextBlock>]) -> Vec<QuoteSnapsho
             if row_change_pct.is_none() {
                 if let Some(pct) = ocr_parse_pct(text) {
                     row_change_pct = Some(pct);
+                    continue;
+                }
+            }
+
+            // 尝试解析为涨跌额（+153 / -2.50，带正负号、无 % 后缀）
+            // OCR 可能无法识别白字红底的涨跌幅 badge，但涨跌额是深色字，可作为反算依据
+            if row_change_amt.is_none() {
+                if let Some(amt) = ocr_parse_change_amt(text) {
+                    row_change_amt = Some(amt);
                     continue;
                 }
             }
@@ -499,12 +511,14 @@ pub fn parse_watchlist_from_ocr(rows: &[Vec<&OcrTextBlock>]) -> Vec<QuoteSnapsho
                 let cleaned = text.to_uppercase()
                     .trim_end_matches(|c: char| !c.is_alphanumeric())
                     .to_string();
-                if matches!(cleaned.as_str(), "HK" | "SH" | "SZ" | "US") {
+                if matches!(cleaned.as_str(), "HK" | "SH" | "SZ" | "US" | "SG" | "FX") {
                     row_market = Some(match cleaned.as_str() {
                         "HK" => Market::HK,
                         "SH" => Market::SH,
                         "SZ" => Market::SZ,
                         "US" => Market::US,
+                        "SG" => Market::SG,
+                        "FX" => Market::FX,
                         _ => unreachable!(),
                     });
                     continue;
@@ -515,21 +529,41 @@ pub fn parse_watchlist_from_ocr(rows: &[Vec<&OcrTextBlock>]) -> Vec<QuoteSnapsho
             // 兼容 OCR 尾部噪声点号 "1.190." → 1.190
             // 过滤 sidebar 噪声小整数（"6"/"14"/"20"等）：小于 100 的价格必须含小数点
             // 排除 "+1.105" 等涨跌额（带 + 前缀的是变动值，不是价格）
+            // 兼容 OCR 合并相邻列 "6.93007 -0.01081" → 按空格分割取第一个
             if row_price.is_none() && !text.starts_with('+') {
                 let price_text = text.trim_end_matches('.');
-                if let Ok(p) = price_text.parse::<f64>() {
-                    if p > 0.0 && (p >= 100.0 || price_text.contains('.')) {
-                        row_price = Some(p);
-                        continue;
-                    }
+                if let Some(p) = try_parse_price(price_text) {
+                    row_price = Some(p);
+                    continue;
                 }
             }
 
-            // 纯中文名称（已有市场前缀但名称在独立块中）
+            // 含中文的名称（已有市场前缀但名称在独立块中）
+            // 允许以字母/数字开头（如 "A50指数期货主连"），只要包含中文即可
             if row_market.is_some() && row_name.is_none() {
-                if text.chars().next().map(|c| c > '\x7f').unwrap_or(false) {
+                if text.chars().any(|c| c > '\x7f') {
                     row_name = Some(text.to_string());
                     continue;
+                }
+            }
+        }
+
+        // SG/FX 等市场的代码格式特殊（如 D05, CNmain, USDCNH），
+        // parse_stock_code 无法识别。当有 pending 非标准市场时，
+        // 尝试将字母数字文本当作该市场代码
+        if row_code.is_none() {
+            if let Some(pm) = pending_market {
+                if matches!(pm, Market::SG | Market::FX) {
+                    for block in row {
+                        let text = block.text.trim();
+                        if !text.is_empty()
+                            && text.len() <= 10
+                            && text.chars().all(|c| c.is_ascii_alphanumeric())
+                        {
+                            row_code = Some(StockCode::new(pm, text));
+                            break;
+                        }
+                    }
                 }
             }
         }
@@ -546,39 +580,57 @@ pub fn parse_watchlist_from_ocr(rows: &[Vec<&OcrTextBlock>]) -> Vec<QuoteSnapsho
             // 主价格优先用 pending（上一行的名称行数据）
             // 代码行自身的价格/涨跌幅作为盘前/盘后扩展数据（美股）
             // 仅当代码行同时有价格和涨跌幅时才识别为扩展数据（排除噪声数字）
-            let (price, change_pct, ext_price, ext_pct) = if let Some(pp) = pending_price.take() {
-                let pct = pending_change_pct.take().unwrap_or(0.0);
+            let (price, change_pct, change_amt, ext_price, ext_pct) = if let Some(pp) = pending_price.take() {
+                let pct = pending_change_pct.take();
+                let amt = pending_change_amt.take().or(row_change_amt.take());
                 let has_extended = row_price.is_some() && row_change_pct.is_some();
                 if has_extended {
-                    (pp, pct, row_price.take(), row_change_pct.take())
+                    (pp, pct, amt, row_price.take(), row_change_pct.take())
                 } else {
-                    (pp, pct, None, None)
+                    (pp, pct, amt, None, None)
                 }
             } else {
                 // 无 pending → 代码行数据作为主价格（HK/A股单行格式）
-                (row_price.take().unwrap_or(0.0), row_change_pct.take().unwrap_or(0.0), None, None)
+                (row_price.take().unwrap_or(0.0), row_change_pct.take(), row_change_amt.take(), None, None)
             };
 
             if price > 0.0 {
-                // 从涨跌幅反推涨跌额：change = price - price / (1 + pct/100)
-                let change = if change_pct.abs() > f64::EPSILON {
-                    price - price / (1.0 + change_pct / 100.0)
+                // 优先用 OCR 识别的涨跌幅；无涨跌幅但有涨跌额时反算
+                let (final_pct, final_change) = if let Some(pct) = change_pct {
+                    // OCR 直接识别到涨跌幅
+                    let change = if let Some(amt) = change_amt {
+                        amt
+                    } else if pct.abs() > f64::EPSILON {
+                        price - price / (1.0 + pct / 100.0)
+                    } else {
+                        0.0
+                    };
+                    (pct, change)
+                } else if let Some(amt) = change_amt {
+                    // 仅有涨跌额 → 反算涨跌幅: pct = amt / (price - amt) * 100
+                    let prev = price - amt;
+                    let pct = if prev.abs() > f64::EPSILON {
+                        amt / prev * 100.0
+                    } else {
+                        0.0
+                    };
+                    (pct, amt)
                 } else {
-                    0.0
+                    (0.0, 0.0)
                 };
 
                 quotes.push(QuoteSnapshot {
                     code: StockCode::new(market, &code.code),
                     name,
                     last_price: price,
-                    prev_close: price - change,
+                    prev_close: price - final_change,
                     open_price: 0.0,
                     high_price: 0.0,
                     low_price: 0.0,
                     volume: 0,
                     turnover: 0.0,
-                    change,
-                    change_pct,
+                    change: final_change,
+                    change_pct: final_pct,
                     turnover_rate: 0.0,
                     amplitude: 0.0,
                     extended_price: ext_price,
@@ -595,16 +647,63 @@ pub fn parse_watchlist_from_ocr(rows: &[Vec<&OcrTextBlock>]) -> Vec<QuoteSnapsho
                 pending_name = row_name;
                 pending_price = row_price;
                 pending_change_pct = row_change_pct;
-            } else if row_price.is_some() && row_change_pct.is_some() {
-                // 价格+涨跌幅同行 → 可信的价格行（选中股价格可能单独一行）
+                pending_change_amt = row_change_amt;
+            } else if row_price.is_some()
+                && (row_change_pct.is_some() || row_change_amt.is_some())
+            {
+                // 价格+涨跌信息同行 → 可信的价格行（选中股价格可能单独一行）
                 pending_price = row_price;
                 pending_change_pct = row_change_pct;
+                pending_change_amt = row_change_amt;
             }
-            // 忽略只有价格没有涨跌幅的独立数字行（避免图表噪声覆盖正确价格）
+            // 忽略只有价格没有涨跌信息的独立数字行（避免图表噪声覆盖正确价格）
         }
     }
 
     quotes
+}
+
+/// 解析价格文本（正数）
+/// 直接解析，失败则按空格分割取第一个 token（兼容 OCR 合并列 "6.93007 -0.01081"）
+/// 过滤 sidebar 噪声小整数：小于 100 的价格必须含小数点
+fn try_parse_price(s: &str) -> Option<f64> {
+    // 先尝试直接解析
+    if let Ok(p) = s.parse::<f64>() {
+        if p > 0.0 && (p >= 100.0 || s.contains('.')) {
+            return Some(p);
+        }
+    }
+    // 降级：按空格分割取第一个 token（OCR 合并相邻列）
+    if let Some(first) = s.split_whitespace().next() {
+        if first.len() < s.len() {
+            let first = first.trim_end_matches('.');
+            if let Ok(p) = first.parse::<f64>() {
+                if p > 0.0 && (p >= 100.0 || first.contains('.')) {
+                    return Some(p);
+                }
+            }
+        }
+    }
+    None
+}
+
+/// 解析涨跌额文本: "+153" → 153.0, "-2.50" → -2.50, "+0.01081" → 0.01081
+///
+/// 必须以 `+` 或 `-` 开头（无符号数字视为价格），且不以 `%` 结尾（那是百分比）。
+/// 兼容 OCR 将小数点误识别为逗号的情况 ("+1,03" → 1.03)。
+fn ocr_parse_change_amt(s: &str) -> Option<f64> {
+    let s = s.trim().trim_end_matches('.');
+    // 必须以 +/- 开头，且不以 % 结尾
+    if s.len() < 2 || (!s.starts_with('+') && !s.starts_with('-')) || s.ends_with('%') {
+        return None;
+    }
+    let num_str = s.trim_start_matches('+').replace(',', ".");
+    let val = num_str.parse::<f64>().ok()?;
+    // 排除绝对值为 0 的无意义结果
+    if val.abs() < f64::EPSILON {
+        return None;
+    }
+    Some(val)
 }
 
 /// 解析百分比文本: "+0.67%" → 0.67, "-1.23%" → -1.23
@@ -622,6 +721,7 @@ fn ocr_parse_pct(s: &str) -> Option<f64> {
 /// 解析 "HK 商汤-W" / "SH 中国建筑" / "us 波音" / "HK世茂集团" / "牛牛圈 SH 中国建筑" 格式
 /// 大小写不敏感（OCR 可能把 SH 识别为 sH, US 识别为 uS）
 /// 兼容 US 的 OCR 噪声："US：", "US）", "US |" → 先清理再匹配
+/// 名称允许以字母/数字开头（如 "A50指数期货主连"），只要包含中文字符即可
 fn ocr_parse_market_name(s: &str) -> Option<(Market, String)> {
     let s = s.trim();
     let upper = s.to_uppercase();
@@ -632,6 +732,8 @@ fn ocr_parse_market_name(s: &str) -> Option<(Market, String)> {
         ("SH ", Market::SH),
         ("SZ ", Market::SZ),
         ("US ", Market::US),
+        ("SG ", Market::SG),
+        ("FX ", Market::FX),
     ];
 
     for (marker, market) in markets {
@@ -643,7 +745,7 @@ fn ocr_parse_market_name(s: &str) -> Option<(Market, String)> {
             let name = rest.trim_start_matches(|c: char| {
                 !c.is_alphanumeric() && c <= '\x7f'
             }).trim().to_string();
-            if !name.is_empty() && name.chars().next().map(|c| c > '\x7f').unwrap_or(false) {
+            if !name.is_empty() && name.chars().any(|c| c > '\x7f') {
                 return Some((*market, name));
             }
         }
@@ -652,7 +754,7 @@ fn ocr_parse_market_name(s: &str) -> Option<(Market, String)> {
         if let Some(pos) = upper.find(search) {
             let name_start = pos + search.len();
             let name = s[name_start..].trim().to_string();
-            if !name.is_empty() && name.chars().next().map(|c| c > '\x7f').unwrap_or(false) {
+            if !name.is_empty() && name.chars().any(|c| c > '\x7f') {
                 return Some((*market, name));
             }
         }
@@ -666,6 +768,8 @@ fn ocr_parse_market_name(s: &str) -> Option<(Market, String)> {
             "SH" => Some(Market::SH),
             "SZ" => Some(Market::SZ),
             "US" => Some(Market::US),
+            "SG" => Some(Market::SG),
+            "FX" => Some(Market::FX),
             _ => None,
         };
         if let Some(m) = market {
@@ -674,7 +778,7 @@ fn ocr_parse_market_name(s: &str) -> Option<(Market, String)> {
             let name = rest.trim_start_matches(|c: char| {
                 !c.is_alphanumeric() && c <= '\x7f'
             }).trim();
-            if !name.is_empty() && name.starts_with(|c: char| c > '\x7f') {
+            if !name.is_empty() && name.chars().any(|c| c > '\x7f') {
                 return Some((m, name.to_string()));
             }
         }
@@ -1089,5 +1193,201 @@ mod tests {
         assert_eq!(quotes[0].code.code, "01918");
         assert_eq!(quotes[0].name, "融创中国");
         assert_eq!(quotes[0].change_pct, -0.81);
+    }
+
+    #[test]
+    fn test_parse_watchlist_hk_index() {
+        // 恒生指数: "HK 恒生指数 | 26559.95 | -1.21%", 代码行 "800000"
+        let blocks = vec![
+            // 行 1 (y=0.9)
+            OcrTextBlock {
+                text: "HK 恒生指数".to_string(),
+                confidence: 0.95,
+                bbox: (0.0, 0.90, 0.2, 0.02),
+            },
+            OcrTextBlock {
+                text: "26559.95".to_string(),
+                confidence: 0.92,
+                bbox: (0.4, 0.90, 0.1, 0.02),
+            },
+            OcrTextBlock {
+                text: "-1.21%".to_string(),
+                confidence: 0.91,
+                bbox: (0.6, 0.90, 0.1, 0.02),
+            },
+            // 行 2 (y=0.87) — 6位指数代码
+            OcrTextBlock {
+                text: "800000".to_string(),
+                confidence: 0.98,
+                bbox: (0.0, 0.87, 0.1, 0.02),
+            },
+        ];
+
+        let rows = group_into_rows(&blocks);
+        let quotes = parse_watchlist_from_ocr(&rows);
+        assert_eq!(quotes.len(), 1);
+        assert_eq!(quotes[0].code.code, "800000");
+        assert_eq!(quotes[0].code.market, Market::HK);
+        assert_eq!(quotes[0].name, "恒生指数");
+        assert_eq!(quotes[0].last_price, 26559.95);
+        assert_eq!(quotes[0].change_pct, -1.21);
+    }
+
+    #[test]
+    fn test_parse_watchlist_sg_market() {
+        // SG 市场: "SG 星展集团 | 35.500 | +0.50%", 代码行 "D05"
+        let blocks = vec![
+            OcrTextBlock {
+                text: "SG 星展集团".to_string(),
+                confidence: 0.95,
+                bbox: (0.0, 0.80, 0.2, 0.02),
+            },
+            OcrTextBlock {
+                text: "35.500".to_string(),
+                confidence: 0.92,
+                bbox: (0.4, 0.80, 0.1, 0.02),
+            },
+            OcrTextBlock {
+                text: "+0.50%".to_string(),
+                confidence: 0.91,
+                bbox: (0.6, 0.80, 0.1, 0.02),
+            },
+            OcrTextBlock {
+                text: "D05".to_string(),
+                confidence: 0.98,
+                bbox: (0.0, 0.77, 0.1, 0.02),
+            },
+        ];
+
+        let rows = group_into_rows(&blocks);
+        let quotes = parse_watchlist_from_ocr(&rows);
+        assert_eq!(quotes.len(), 1);
+        assert_eq!(quotes[0].code.market, Market::SG);
+        assert_eq!(quotes[0].name, "星展集团");
+        assert_eq!(quotes[0].last_price, 35.5);
+    }
+
+    #[test]
+    fn test_parse_watchlist_sg_futures() {
+        // SG 期货: "SG A50指数期货主连（2602）| 14960 | +1.03%", 代码行 "CNmain"
+        let blocks = vec![
+            OcrTextBlock {
+                text: "SG A50指数期货主连（2602）".to_string(),
+                confidence: 0.95,
+                bbox: (0.0, 0.80, 0.3, 0.02),
+            },
+            OcrTextBlock {
+                text: "14960".to_string(),
+                confidence: 0.92,
+                bbox: (0.5, 0.80, 0.1, 0.02),
+            },
+            OcrTextBlock {
+                text: "+1.03%".to_string(),
+                confidence: 0.91,
+                bbox: (0.7, 0.80, 0.1, 0.02),
+            },
+            OcrTextBlock {
+                text: "CNmain".to_string(),
+                confidence: 0.98,
+                bbox: (0.0, 0.77, 0.1, 0.02),
+            },
+        ];
+
+        let rows = group_into_rows(&blocks);
+        let quotes = parse_watchlist_from_ocr(&rows);
+        assert_eq!(quotes.len(), 1);
+        assert_eq!(quotes[0].code.code, "CNmain");
+        assert_eq!(quotes[0].code.market, Market::SG);
+        assert_eq!(quotes[0].name, "A50指数期货主连（2602）");
+        assert_eq!(quotes[0].last_price, 14960.0);
+        assert_eq!(quotes[0].change_pct, 1.03);
+    }
+
+    #[test]
+    fn test_parse_watchlist_fx_market() {
+        // FX 外汇: OCR 实际输出将价格和涨跌额合并为一个块 "6.93007 -0.01081"
+        let blocks = vec![
+            OcrTextBlock {
+                text: "FX 美元/离岸人民币".to_string(),
+                confidence: 0.95,
+                bbox: (0.0, 0.80, 0.3, 0.02),
+            },
+            OcrTextBlock {
+                text: "6.93007 -0.01081".to_string(), // OCR 合并了价格和涨跌额
+                confidence: 0.92,
+                bbox: (0.5, 0.80, 0.15, 0.02),
+            },
+            OcrTextBlock {
+                text: "-0.16%".to_string(),
+                confidence: 0.91,
+                bbox: (0.7, 0.80, 0.1, 0.02),
+            },
+            OcrTextBlock {
+                text: "USDCNH".to_string(),
+                confidence: 0.98,
+                bbox: (0.0, 0.77, 0.1, 0.02),
+            },
+        ];
+
+        let rows = group_into_rows(&blocks);
+        let quotes = parse_watchlist_from_ocr(&rows);
+        assert_eq!(quotes.len(), 1);
+        assert_eq!(quotes[0].code.code, "USDCNH");
+        assert_eq!(quotes[0].code.market, Market::FX);
+        assert_eq!(quotes[0].name, "美元/离岸人民币");
+        assert!((quotes[0].last_price - 6.93007).abs() < 0.0001);
+        assert_eq!(quotes[0].change_pct, -0.16);
+    }
+
+    #[test]
+    fn test_ocr_parse_change_amt() {
+        assert_eq!(ocr_parse_change_amt("+153"), Some(153.0));
+        assert_eq!(ocr_parse_change_amt("-2.50"), Some(-2.50));
+        assert_eq!(ocr_parse_change_amt("+0.01081"), Some(0.01081));
+        assert_eq!(ocr_parse_change_amt("+1,03"), Some(1.03)); // OCR 逗号
+        assert_eq!(ocr_parse_change_amt("+153."), Some(153.0)); // 尾部噪声点
+        // 不应匹配的情况
+        assert_eq!(ocr_parse_change_amt("153"), None); // 无符号 → 价格
+        assert_eq!(ocr_parse_change_amt("+0.67%"), None); // 百分比
+        assert_eq!(ocr_parse_change_amt("+0"), None); // 零
+        assert_eq!(ocr_parse_change_amt(""), None);
+        assert_eq!(ocr_parse_change_amt("+"), None);
+    }
+
+    #[test]
+    fn test_parse_watchlist_change_amt_fallback() {
+        // Vision OCR 无法识别白字红底涨跌幅 badge，但涨跌额 "+153" 可识别
+        // 反算: pct = 153 / (14960 - 153) * 100 ≈ 1.033%
+        let blocks = vec![
+            OcrTextBlock {
+                text: "SG A50指数期货主连".to_string(),
+                confidence: 0.95,
+                bbox: (0.0, 0.80, 0.3, 0.02),
+            },
+            OcrTextBlock {
+                text: "14960".to_string(),
+                confidence: 0.92,
+                bbox: (0.5, 0.80, 0.1, 0.02),
+            },
+            OcrTextBlock {
+                text: "+153".to_string(), // 涨跌额（非百分比）
+                confidence: 0.91,
+                bbox: (0.7, 0.80, 0.1, 0.02),
+            },
+            OcrTextBlock {
+                text: "CNmain".to_string(),
+                confidence: 0.98,
+                bbox: (0.0, 0.77, 0.1, 0.02),
+            },
+        ];
+
+        let rows = group_into_rows(&blocks);
+        let quotes = parse_watchlist_from_ocr(&rows);
+        assert_eq!(quotes.len(), 1);
+        assert_eq!(quotes[0].code.code, "CNmain");
+        assert_eq!(quotes[0].last_price, 14960.0);
+        assert_eq!(quotes[0].change, 153.0);
+        // 反算涨跌幅: 153 / (14960 - 153) * 100 ≈ 1.033%
+        assert!((quotes[0].change_pct - 1.033).abs() < 0.1);
     }
 }

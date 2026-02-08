@@ -89,6 +89,10 @@ impl DashboardState {
     }
 
     /// 更新行情数据（按股票代码合并，不丢失未更新的股票）
+    ///
+    /// 匹配规则：
+    /// 1. market + code 完全匹配 → 直接合并
+    /// 2. code 字符串相同，一方 market 为 Unknown → 视为同一只股票，采用非 Unknown 的 market
     pub fn update_quotes(&mut self, new_quotes: Vec<QuoteSnapshot>) {
         if self.quotes.is_empty() {
             // 首次初始化，直接赋值
@@ -96,10 +100,24 @@ impl DashboardState {
         } else {
             // 合并：更新已有的，添加新的
             for mut new_q in new_quotes {
-                if let Some(existing) = self.quotes.iter_mut().find(|q| q.code == new_q.code) {
+                // 查找匹配：优先精确匹配，其次 code 相同 + 一方 Unknown
+                let found = self.quotes.iter_mut().find(|q| {
+                    if q.code == new_q.code {
+                        return true;
+                    }
+                    // code 字符串相同但 market 不同：Unknown 视为通配
+                    q.code.code == new_q.code.code
+                        && (q.code.market == Market::Unknown
+                            || new_q.code.market == Market::Unknown)
+                });
+                if let Some(existing) = found {
                     // 保留已有的中文名（API 返回的是英文名）
-                    if !existing.name.is_empty() && existing.name != new_q.name {
+                    if !existing.name.is_empty() && new_q.name.is_empty() {
                         new_q.name = existing.name.clone();
+                    }
+                    // 采用非 Unknown 的市场（OCR 回写修正）
+                    if new_q.code.market == Market::Unknown && existing.code.market != Market::Unknown {
+                        new_q.code.market = existing.code.market;
                     }
                     *existing = new_q;
                 } else {

@@ -12,6 +12,10 @@ pub enum Market {
     SZ,
     /// 美股
     US,
+    /// 新加坡
+    SG,
+    /// 外汇
+    FX,
     /// 未知
     Unknown,
 }
@@ -23,6 +27,8 @@ impl fmt::Display for Market {
             Market::SH => write!(f, "SH"),
             Market::SZ => write!(f, "SZ"),
             Market::US => write!(f, "US"),
+            Market::SG => write!(f, "SG"),
+            Market::FX => write!(f, "FX"),
             Market::Unknown => write!(f, "??"),
         }
     }

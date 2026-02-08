@@ -41,6 +41,7 @@ mod futu_market {
     pub const US: i32 = 11;     // 美股 QotMarket_US_Security
     pub const CN_SH: i32 = 21;  // A股-沪 QotMarket_CNSH_Security
     pub const CN_SZ: i32 = 22;  // A股-深 QotMarket_CNSZ_Security
+    pub const SG: i32 = 13;     // 新加坡 QotMarket_SG_Security
 }
 
 // ---- Protobuf 消息定义 (prost derive) ----
@@ -326,19 +327,20 @@ impl OpenApiClient {
         stocks: &[StockCode],
         sub_types: &[i32],
     ) -> Result<()> {
-        let markets = [Market::HK, Market::SH, Market::SZ, Market::US];
-        let market_names = ["HK", "SH", "SZ", "US"];
+        let markets = [Market::HK, Market::SH, Market::SZ, Market::US, Market::SG];
+        let market_names = ["HK", "SH", "SZ", "US", "SG"];
 
-        // 按市场分组（跳过 Unknown）
-        let mut groups: Vec<Vec<&StockCode>> = vec![Vec::new(); 4];
+        // 按市场分组（跳过 Unknown/FX）
+        let mut groups: Vec<Vec<&StockCode>> = vec![Vec::new(); 5];
         for s in stocks {
             match s.market {
                 Market::HK => groups[0].push(s),
                 Market::SH => groups[1].push(s),
                 Market::SZ => groups[2].push(s),
                 Market::US => groups[3].push(s),
-                Market::Unknown => {
-                    debug!("Skipping unknown market stock: {}", s.display_code());
+                Market::SG => groups[4].push(s),
+                Market::FX | Market::Unknown => {
+                    debug!("Skipping unsupported market stock: {}", s.display_code());
                 }
             }
         }
@@ -429,18 +431,19 @@ impl OpenApiClient {
         &mut self,
         stocks: &[StockCode],
     ) -> Result<Vec<QuoteSnapshot>> {
-        let markets = [Market::HK, Market::SH, Market::SZ, Market::US];
-        let market_names = ["HK", "SH", "SZ", "US"];
+        let markets = [Market::HK, Market::SH, Market::SZ, Market::US, Market::SG];
+        let market_names = ["HK", "SH", "SZ", "US", "SG"];
 
         // 按市场分组，只保留已订阅的市场
-        let mut groups: Vec<Vec<&StockCode>> = vec![Vec::new(); 4];
+        let mut groups: Vec<Vec<&StockCode>> = vec![Vec::new(); 5];
         for s in stocks {
             let idx = match s.market {
                 Market::HK => Some(0),
                 Market::SH => Some(1),
                 Market::SZ => Some(2),
                 Market::US => Some(3),
-                Market::Unknown => None,
+                Market::SG => Some(4),
+                Market::FX | Market::Unknown => None,
             };
             if let Some(i) = idx {
                 if self.subscribed_markets.contains(&markets[i]) {
@@ -934,6 +937,8 @@ fn stock_code_to_futu_market(code: &StockCode) -> i32 {
         Market::US => futu_market::US,
         Market::SH => futu_market::CN_SH,
         Market::SZ => futu_market::CN_SZ,
+        Market::SG => futu_market::SG,
+        Market::FX => futu_market::HK, // FX 暂无独立市场码，降级到 HK
         Market::Unknown => futu_market::HK,
     }
 }
@@ -970,6 +975,7 @@ fn futu_market_to_stock_code(market: i32, code: &str) -> StockCode {
         11 => Market::US,
         21 => Market::SH,
         22 => Market::SZ,
+        13 => Market::SG,
         _ => Market::Unknown,
     };
     StockCode::new(m, code)

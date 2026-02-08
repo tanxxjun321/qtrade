@@ -579,6 +579,13 @@ async fn cmd_test_ocr(_config: AppConfig) -> Result<()> {
             ocr::crop_image(&image, layout.watchlist_x)?
         };
 
+        // 保存截图和裁剪图片供调试
+        let tmp_dir = std::path::Path::new("/tmp/qtrade-ocr");
+        let _ = std::fs::create_dir_all(tmp_dir);
+        save_cgimage_png(&image, &tmp_dir.join("full.png"));
+        save_cgimage_png(&watchlist_crop, &tmp_dir.join("crop.png"));
+        println!("  已保存: /tmp/qtrade-ocr/full.png, /tmp/qtrade-ocr/crop.png");
+
         // 5. Pass 2: 精确 OCR
         println!("\n[Pass 2] 裁剪区域 → 精确 OCR...");
         println!(
@@ -591,6 +598,15 @@ async fn cmd_test_ocr(_config: AppConfig) -> Result<()> {
         let blocks = ocr::recognize_text(&watchlist_crop)?;
         let acc_ms = t1.elapsed().as_millis();
         println!("  Accurate OCR: {} 个文字块 ({} ms)", blocks.len(), acc_ms);
+
+        // 打印每个 OCR 块的详细信息
+        println!("\n--- OCR 原始块 ---");
+        for (i, b) in blocks.iter().enumerate() {
+            println!(
+                "  [{}] conf={:.2} bbox=({:.3},{:.3},{:.3},{:.3}) \"{}\"",
+                i, b.confidence, b.bbox.0, b.bbox.1, b.bbox.2, b.bbox.3, b.text
+            );
+        }
 
         // 6. 分行
         println!("\n--- 行分组结果 ---");
@@ -892,6 +908,52 @@ async fn run_daily_kline_cycle(
             let mut state = dash_state.lock().await;
             state.daily_kline_status = "日K连接失败".to_string();
             warn!("Daily K-line connect failed: {}", e);
+        }
+    }
+}
+
+/// 将 CGImage 保存为 PNG 文件（通过 macOS ImageIO 框架）
+fn save_cgimage_png(image: &objc2_core_foundation::CFRetained<objc2_core_graphics::CGImage>, path: &std::path::Path) {
+    use core_foundation::base::TCFType;
+    use core_foundation::string::CFString;
+    use core_foundation::url::CFURL;
+
+    extern "C" {
+        fn CGImageDestinationCreateWithURL(
+            url: core_foundation::url::CFURLRef,
+            type_: core_foundation::string::CFStringRef,
+            count: usize,
+            options: *const std::ffi::c_void,
+        ) -> *mut std::ffi::c_void;
+
+        fn CGImageDestinationAddImage(
+            dest: *mut std::ffi::c_void,
+            image: *const std::ffi::c_void,
+            properties: *const std::ffi::c_void,
+        );
+
+        fn CGImageDestinationFinalize(dest: *mut std::ffi::c_void) -> bool;
+    }
+
+    let path_str = path.to_string_lossy().to_string();
+    let url = CFURL::from_file_system_path(CFString::new(&path_str), core_foundation::url::kCFURLPOSIXPathStyle, false);
+    let png_type = CFString::new("public.png");
+
+    unsafe {
+        let dest = CGImageDestinationCreateWithURL(
+            url.as_concrete_TypeRef(),
+            png_type.as_concrete_TypeRef(),
+            1,
+            std::ptr::null(),
+        );
+        if dest.is_null() {
+            eprintln!("Failed to create image destination for {}", path_str);
+            return;
+        }
+        let raw_img = objc2_core_foundation::CFRetained::as_ptr(image).as_ptr() as *const std::ffi::c_void;
+        CGImageDestinationAddImage(dest, raw_img, std::ptr::null());
+        if !CGImageDestinationFinalize(dest) {
+            eprintln!("Failed to finalize image at {}", path_str);
         }
     }
 }
