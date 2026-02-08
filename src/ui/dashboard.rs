@@ -129,6 +129,47 @@ impl DashboardState {
         self.sort_quotes();
     }
 
+    /// 同步 watchlist 变更：移除已删股票、添加新增股票
+    pub fn sync_watchlist(
+        &mut self,
+        new_codes: &[StockCode],
+        new_entries: &[crate::models::WatchlistEntry],
+    ) {
+        use std::collections::HashSet;
+
+        let new_set: HashSet<&StockCode> = new_codes.iter().collect();
+
+        // 移除不在新列表中的股票
+        self.quotes.retain(|q| new_set.contains(&q.code));
+        self.indicators.retain(|k, _| new_set.contains(k));
+        self.signals.retain(|k, _| new_set.contains(k));
+        self.daily_indicators.retain(|k, _| new_set.contains(k));
+        self.daily_signals.retain(|k, _| new_set.contains(k));
+
+        // 新增的股票追加空 QuoteSnapshot
+        let existing: HashSet<StockCode> = self.quotes.iter().map(|q| q.code.clone()).collect();
+        for entry in new_entries {
+            if !existing.contains(&entry.code) && new_set.contains(&entry.code) {
+                let mut q = QuoteSnapshot::empty(entry.code.clone(), entry.name.clone());
+                if let Some(price) = entry.cached_price {
+                    q.last_price = price;
+                }
+                self.quotes.push(q);
+            }
+        }
+
+        // 防越界
+        if !self.quotes.is_empty() {
+            if self.selected_row >= self.quotes.len() {
+                self.selected_row = self.quotes.len() - 1;
+            }
+        } else {
+            self.selected_row = 0;
+        }
+
+        self.sort_quotes();
+    }
+
     /// 排序
     fn sort_quotes(&mut self) {
         let asc = self.sort_ascending;

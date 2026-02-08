@@ -136,6 +136,12 @@ impl AnalysisEngine {
         }
     }
 
+    /// 移除股票的 tick 级分析数据
+    pub fn remove_stock(&mut self, code: &StockCode) {
+        self.windows.remove(code);
+        self.prev_indicators.remove(code);
+    }
+
     /// 获取价格窗口长度
     pub fn window_len(&self, code: &StockCode) -> usize {
         self.windows.get(code).map(|w| w.len()).unwrap_or(0)

@@ -426,6 +426,87 @@ impl OpenApiClient {
         Ok(())
     }
 
+    /// 退订行情
+    pub async fn unsubscribe(
+        &mut self,
+        stocks: &[StockCode],
+        sub_types: &[i32],
+    ) -> Result<()> {
+        // 按市场分组
+        let mut groups: Vec<Vec<&StockCode>> = vec![Vec::new(); 5];
+        for s in stocks {
+            match s.market {
+                Market::HK => groups[0].push(s),
+                Market::SH => groups[1].push(s),
+                Market::SZ => groups[2].push(s),
+                Market::US => groups[3].push(s),
+                Market::SG => groups[4].push(s),
+                Market::FX | Market::Unknown => {}
+            }
+        }
+
+        for group in &groups {
+            if group.is_empty() {
+                continue;
+            }
+            if let Err(e) = self.unsubscribe_batch(group, sub_types).await {
+                warn!("Unsubscribe batch failed: {}", e);
+            }
+        }
+
+        Ok(())
+    }
+
+    /// 退订单批次行情
+    async fn unsubscribe_batch(
+        &mut self,
+        stocks: &[&StockCode],
+        sub_types: &[i32],
+    ) -> Result<()> {
+        let security_list: Vec<serde_json::Value> = stocks
+            .iter()
+            .map(|s| {
+                serde_json::json!({
+                    "market": stock_code_to_futu_market(s),
+                    "code": &s.code
+                })
+            })
+            .collect();
+
+        let body = serde_json::json!({
+            "c2s": {
+                "securityList": security_list,
+                "subTypeList": sub_types,
+                "isSubOrUnSub": false,
+                "isRegOrUnRegPush": false
+            }
+        });
+
+        let body_bytes = serde_json::to_vec(&body)?;
+        self.send_packet_with_fmt(proto_id::QOT_SUB, &body_bytes, 1)
+            .await?;
+
+        let response = self.recv_response(proto_id::QOT_SUB).await?;
+        if let Ok(resp) = pb_sub::Response::decode(response.as_slice()) {
+            if resp.ret_type != 0 {
+                anyhow::bail!(
+                    "QotUnsub failed: {}",
+                    resp.ret_msg.as_deref().unwrap_or("unknown")
+                );
+            }
+            return Ok(());
+        }
+        if let Ok(json_resp) = serde_json::from_slice::<serde_json::Value>(&response) {
+            let ret_type = json_resp.get("retType").and_then(|v| v.as_i64()).unwrap_or(-1);
+            let ret_msg = json_resp.get("retMsg").and_then(|v| v.as_str()).unwrap_or("unknown");
+            if ret_type != 0 {
+                anyhow::bail!("QotUnsub error: {}", ret_msg);
+            }
+        }
+
+        Ok(())
+    }
+
     /// 获取基本行情（只查询已订阅成功的市场）
     pub async fn get_basic_quotes(
         &mut self,
