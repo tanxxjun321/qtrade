@@ -19,7 +19,7 @@
 - **macOS**（依赖 Accessibility API / Core Graphics / Vision 框架）
 - **Rust 1.70+**
 - **富途牛牛 App**（已登录，自选股列表非空）
-- FutuOpenD（仅 `openapi` 数据源和日 K 线分析需要）
+- [FutuOpenD](https://www.futunn.com/download/OpenAPI)（日 K 线分析需要，不论数据源；详见 [使用指南](docs/OPEND_GUIDE.md)）
 
 ## 快速开始
 
@@ -62,6 +62,17 @@ cargo run -- start
 | `d` | 显示/隐藏日线信号 |
 | `i` | 显示/隐藏技术指标 |
 | `q` | 退出 |
+
+## FutuOpenD
+
+日 K 线分析功能依赖 [FutuOpenD](https://www.futunn.com/download/OpenAPI) 网关（不论使用哪种实时数据源）。推荐配置：
+
+- **实时行情**：`source = "ocr"`（截图 OCR，无需 OpenD 配额）
+- **日 K 线**：通过 OpenD proto 3103 拉取，启动时自动增量更新
+
+不需要日 K 线时，设置 `daily_kline_enabled = false` 即可完全脱离 OpenD 运行。
+
+完整安装与配置步骤见 [FutuOpenD 使用指南](docs/OPEND_GUIDE.md)。
 
 ## 配置
 
@@ -114,6 +125,7 @@ src/
 ## 文档
 
 - [实施计划](docs/PLAN.md)
+- [FutuOpenD 使用指南](docs/OPEND_GUIDE.md)
 - [日 K 线缓存策略](docs/DAILY_KLINE_CACHE.md)
 - [美股交易时段](docs/US_MARKET_SESSIONS.md)
 
