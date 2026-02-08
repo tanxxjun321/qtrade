@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project
 
-qtrade - 量化交易盯盘系统。从 macOS 上的富途牛牛 App 获取实时行情数据，支持港股和A股智能盯盘。
+qtrade - 量化交易盯盘系统。从 macOS 上的富途牛牛 App 获取实时行情数据，支持港股、A股、美股、新加坡、外汇等多市场智能盯盘。
 
 数据源三通道：
 1. **macOS Accessibility API** — 直接读取 App 窗口 UI 元素
@@ -16,7 +16,7 @@ qtrade - 量化交易盯盘系统。从 macOS 上的富途牛牛 App 获取实�
 ## Build & Development Commands
 
 - `cargo build` - 构建项目
-- `cargo test` - 运行所有测试（28 个单元测试）
+- `cargo test` - 运行所有测试（34 个单元测试）
 - `cargo run -- watchlist` - 显示自选股列表（从富途 plist 读取）
 - `cargo run -- start` - 启动盯盘系统（ratatui TUI）
 - `cargo run -- test-api` - 测试 FutuOpenD 连接
@@ -32,7 +32,7 @@ qtrade - 量化交易盯盘系统。从 macOS 上的富途牛牛 App 获取实�
 src/
 ├── main.rs                  # CLI 入口 (clap)：start / watchlist / debug / test-api / test-ocr
 ├── config.rs                # TOML 配置加载 (serde)
-├── models.rs                # 核心数据模型：StockCode, QuoteSnapshot, Signal, DailyKline, TimedSignal, AlertEvent
+├── models.rs                # 核心数据模型：StockCode, Market, QuoteSnapshot, Signal, DailyKline, TimedSignal, AlertEvent, UsMarketSession
 ├── futu/
 │   ├── watchlist.rs         # 读取 plist 自选股（自动扫描用户目录）
 │   ├── accessibility.rs     # macOS AXUIElement 读取 App 窗口 + AX 表格 frame 检测
@@ -110,7 +110,7 @@ OCR 管线（OcrProvider）：
 - 富途本地数据：`~/Library/Containers/cn.futu.Niuniu/Data/Library/Application Support/{user_id}/watchstockContainer.dat`
 - 日K线缓存：`~/.config/qtrade/kline_cache.json`
 - 价格精度：plist 整数 ÷ 10^11
-- 股票编码：`1XXXXXX`=沪市, `2XXXXXX`=深市, 其他=港股
+- 股票编码：`1XXXXXX`=沪市, `2XXXXXX`=深市, 其他=港股；美股/新加坡/外汇由 OCR 代码模式推断
 
 ### 配置
 
@@ -118,7 +118,7 @@ OCR 管线（OcrProvider）：
 
 ```toml
 [data_source]
-source = "accessibility"  # 或 "openapi" 或 "ocr"
+source = "ocr"  # "accessibility" | "openapi" | "ocr"
 refresh_interval_secs = 2
 
 [futu]
@@ -135,9 +135,19 @@ daily_kline_days = 120
 daily_kline_refresh_minutes = 30
 ```
 
+### 支持市场
+
+- **港股 (HK)** — 5 位代码（如 00700）
+- **沪市 A 股 (SH)** — 6 位 6xx（如 600519）
+- **深市 A 股 (SZ)** — 6 位 0xx/3xx（如 000001）
+- **美股 (US)** — 字母代码（如 AAPL、.IXIC）；支持盘前/盘后/夜盘时段显示（详见 `docs/US_MARKET_SESSIONS.md`）
+- **新加坡 (SG)** — 字母+数字代码
+- **外汇 (FX)** — 货币对代码（如 USDCNH）
+
 ### 工具链
 
 - Rust 版本：1.93.0
 - ratatui 0.29 + crossterm 0.28
-- core-foundation 0.10
+- core-foundation 0.10 + objc2 0.6
+- chrono 0.4 + chrono-tz 0.10（美股时段 DST 处理）
 - edition 2021

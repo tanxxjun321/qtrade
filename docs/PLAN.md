@@ -2,7 +2,7 @@
 
 ## Context
 
-开发一个量化交易监控程序，直接从 macOS 上运行的富途牛牛 App 获取实时行情数据，用于港股和A股的智能盯盘。不依赖 FutuOpenD 网关，而是通过 macOS 系统级 API（Accessibility API 读取 UI 元素 + Window Capture + Vision OCR 作为后备）从 App 窗口中提取数据。
+开发一个量化交易监控程序，从 macOS 上运行的富途牛牛 App 获取实时行情数据，支持港股、A股、美股、新加坡、外汇等多市场智能盯盘。支持三种数据源通道互补。
 
 数据源三通道：
 1. **macOS Accessibility API** — 直接从 App 窗口 UI 元素读取实时行情（无需额外软件）
@@ -31,28 +31,31 @@ qtrade/
 ├── Cargo.toml
 ├── CLAUDE.md
 ├── docs/
-│   └── PLAN.md                     # 本文件
+│   ├── PLAN.md                     # 本文件
+│   ├── DAILY_KLINE_CACHE.md        # 日K线缓存与增量拉取策略
+│   └── US_MARKET_SESSIONS.md       # 美股交易时段与显示规则
 ├── config/
 │   └── config.toml.example
 ├── src/
-│   ├── main.rs                     # 入口 + CLI (clap)
-│   ├── config.rs                   # TOML 配置加载
-│   ├── models.rs                   # 共享数据模型
+│   ├── main.rs                     # 入口 + CLI (clap): start / watchlist / debug / test-api / test-ocr
+│   ├── config.rs                   # TOML 配置加载 (serde)
+│   ├── models.rs                   # 核心数据模型（Market, StockCode, QuoteSnapshot, Signal, UsMarketSession 等）
 │   ├── futu/
 │   │   ├── mod.rs
 │   │   ├── watchlist.rs            # 读取 App 本地 plist 自选股列表
-│   │   ├── accessibility.rs        # macOS AXUIElement 读取 App 窗口 + GridFrame 检测
-│   │   ├── ocr.rs                  # 窗口截图 + Vision OCR 文字识别
-│   │   └── openapi.rs              # FutuOpenD TCP 协议客户端（protobuf）
+│   │   ├── accessibility.rs        # macOS AXUIElement 读取 App 窗口 + AX 表格 frame 检测
+│   │   ├── ocr.rs                  # 窗口截图 + Vision OCR 文字识别（含美股时段 + 防抖）
+│   │   └── openapi.rs              # FutuOpenD TCP 客户端（JSON 模式，含日K线 proto 3103）
 │   ├── data/
 │   │   ├── mod.rs
 │   │   ├── provider.rs             # DataProviderKind 枚举分发（AX / OpenAPI / OCR）
 │   │   └── parser.rs               # 从原始文本/AX值解析为 QuoteSnapshot
 │   ├── analysis/
 │   │   ├── mod.rs
-│   │   ├── engine.rs               # 分析引擎：滚动窗口 + 指标调度
-│   │   ├── indicators.rs           # MA / MACD / RSI 纯计算
-│   │   └── signals.rs              # 信号判定（金叉/死叉、超买超卖）
+│   │   ├── daily.rs                # 日K线分析引擎（JSON 缓存 + 增量更新 + MA/MACD/RSI 信号）
+│   │   ├── engine.rs               # 分析引擎：滚动窗口 + 指标调度（Tick 级别）
+│   │   ├── indicators.rs           # SMA / EMA / MACD / RSI 纯计算
+│   │   └── signals.rs              # 信号判定（金叉/死叉、超买超卖、放量检测）
 │   ├── alerts/
 │   │   ├── mod.rs
 │   │   ├── manager.rs              # 规则评估 + 冷却机制
@@ -60,15 +63,11 @@ qtrade/
 │   │   └── notify.rs               # 通知渠道（终端 + Webhook）
 │   ├── ui/
 │   │   ├── mod.rs
-│   │   └── dashboard.rs            # ratatui 实时终端仪表盘
+│   │   └── dashboard.rs            # ratatui TUI 仪表盘（含日线信号显示）
 │   └── trading/                    # 预留交易模块（第一阶段仅 trait 定义）
 │       ├── mod.rs
 │       └── paper.rs
-└── tests/
-    ├── test_config.rs
-    ├── test_indicators.rs
-    ├── test_parser.rs
-    └── test_watchlist.rs
+└── tests/                        # 单元测试内嵌于各模块中（34 个）
 ```
 
 ## 数据流架构
@@ -122,27 +121,38 @@ watchlist.rs：从 plist 读取自选股列表（三种方案共用）
 
 ```toml
 [dependencies]
+# macOS 系统 API
 objc2 = "0.6"
 objc2-foundation = "0.3"
 objc2-app-kit = "0.3"
+objc2-core-foundation = { version = "0.3", features = ["CFCGTypes", "CFArray", "CFDictionary"] }
+objc2-core-graphics = { version = "0.3", features = ["CGImage", "CGWindow", "CGGeometry", "CGColorSpace"] }
+objc2-vision = { version = "0.3", features = ["VNRecognizeTextRequest", "VNRequestHandler", "VNObservation", "VNRequest", "VNTypes"] }
 core-foundation = "0.10"
+# FutuOpenD OpenAPI
 prost = "0.13"
 prost-types = "0.13"
 tokio-util = { version = "0.7", features = ["codec"] }
 bytes = "1"
+# 数据与配置
 plist = "1"
+rusqlite = { version = "0.31", features = ["bundled"] }
 serde = { version = "1", features = ["derive"] }
+serde_json = "1"
 toml = "0.8"
+# 异步 + UI + CLI
 tokio = { version = "1", features = ["full"] }
 ratatui = "0.29"
 crossterm = "0.28"
 clap = { version = "4", features = ["derive"] }
 reqwest = { version = "0.12", features = ["json"] }
 tracing = "0.1"
-tracing-subscriber = "0.3"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+# 时间 + 工具
 chrono = { version = "0.4", features = ["serde"] }
+chrono-tz = "0.10"
 anyhow = "1"
-sha2 = "0.10"
+sha1 = "0.10"
 
 [build-dependencies]
 prost-build = "0.13"
@@ -156,39 +166,45 @@ prost-build = "0.13"
 - 实现 `futu/watchlist.rs`：解析 `watchstockContainer.dat` plist，提取股票代码和缓存价格
 - 验证：运行程序输出当前自选股列表
 
-### Step 2: Accessibility API 数据获取
+### Step 2: Accessibility API 数据获取 ✅
 - 实现 `futu/accessibility.rs`：
   - 通过 `AXUIElementCreateApplication` 获取富途 App 进程
   - 遍历窗口 → 子元素树，定位股票行情表格区域
   - 读取 AXValue/AXTitle 等属性提取价格文本
+  - AX API 检测 FTVGridView frame（辅助 OCR 布局）
 - 实现 `data/parser.rs`：从原始文本解析出股票代码、价格、涨跌幅
 
-### Step 3: FutuOpenD OpenAPI 数据源
+### Step 3: FutuOpenD OpenAPI 数据源 ✅
 - 实现 `futu/openapi.rs`：
   - TCP 连接 FutuOpenD (localhost:11111)
   - Futu 协议帧格式：固定头部 + protobuf body
   - 实现 InitConnect、GetGlobalState、Sub（订阅行情）、GetBasicQot（获取报价）
   - 实时推送回调处理
+  - 日K线 proto 3103 (QOT_REQUEST_HISTORY_KL)
 - 实现 `data/provider.rs`：DataProvider trait
 
-### Step 4: 终端仪表盘
-- 实现 `ui/dashboard.rs`：ratatui 实时表格展示自选股行情
+### Step 4: 终端仪表盘 ✅
+- 实现 `ui/dashboard.rs`：ratatui 实时表格展示自选股行情（含日线信号）
 - 实现 `main.rs` CLI (clap)
 
-### Step 5: 技术指标分析
+### Step 5: 技术指标分析 ✅
 - 实现 `analysis/indicators.rs`：MA（多周期）、MACD、RSI 纯计算函数
-- 实现 `analysis/engine.rs`：维护每只股票的价格滚动窗口
+- 实现 `analysis/engine.rs`：维护每只股票的价格滚动窗口（Tick 级别）
 - 实现 `analysis/signals.rs`：金叉/死叉、超买/超卖信号判定
-- 单元测试
+- 实现 `analysis/daily.rs`：日K线分析引擎（JSON 缓存 + 逐只自适应拉取 + 断点续传）
+- 单元测试（34 个）
 
-### Step 6: 提醒系统
+### Step 6: 提醒系统 ✅
 - 实现 `alerts/rules.rs`：涨跌幅阈值、目标价、指标信号规则
 - 实现 `alerts/manager.rs`：规则评估 + 冷却机制
-- 实现 `alerts/notify.rs`：终端弹窗 + Webhook
+- 实现 `alerts/notify.rs`：终端弹窗 + macOS 通知 + Webhook
 
-### Step 7: 集成 + CLAUDE.md 更新
+### Step 7: 集成 + 多市场支持 ✅
 - 在 `main.rs` 中完整串联：数据采集 → 分析 → 提醒 → UI
-- 更新 `CLAUDE.md` 和 `config/config.toml.example`
+- 实现 `futu/ocr.rs`：窗口截图 + Vision OCR 数据源（AX 辅助布局 + 防抖 + 截图哈希缓存）
+- 美股盘前/盘后/夜盘时段检测与显示（`docs/US_MARKET_SESSIONS.md`）
+- 新加坡、外汇市场支持
+- 日K线缓存与增量拉取（`docs/DAILY_KLINE_CACHE.md`）
 - 预留 `trading/` trait 定义
 
 ## 验证方式

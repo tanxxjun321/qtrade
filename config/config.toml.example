@@ -6,8 +6,8 @@
 log_level = "info"
 
 [data_source]
-# 数据源类型: "accessibility" (macOS AX API) 或 "openapi" (FutuOpenD)
-source = "accessibility"
+# 数据源类型: "accessibility" (macOS AX API) | "openapi" (FutuOpenD) | "ocr" (截图+Vision OCR)
+source = "ocr"
 # 数据刷新间隔（秒）
 refresh_interval_secs = 2
 
@@ -35,3 +35,11 @@ change_threshold_pct = 3.0
 page_size = 50
 # 是否显示技术指标列
 show_indicators = true
+
+[analysis]
+# 是否启用日K线分析（需 FutuOpenD 连接）
+daily_kline_enabled = true
+# 日K线获取天数（需 >= 120 以满足 MA60 + MACD 预热）
+daily_kline_days = 120
+# 日K线刷新间隔（分钟），0 表示仅启动时获取
+daily_kline_refresh_minutes = 30
