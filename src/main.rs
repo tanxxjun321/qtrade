@@ -309,158 +309,17 @@ async fn cmd_start(config: AppConfig) -> Result<()> {
                     }
                     tokio::time::sleep(Duration::from_secs(refresh_mins * 60)).await;
                 }
-
                 first = false;
-                let total = daily_codes.len();
 
-                info!("Fetching daily K-line data ({}只)...", total);
-                {
-                    let mut state = dash_for_daily.lock().await;
-                    state.daily_kline_status = format!("日K拉取中(0/{})", total);
-                }
-
-                // 创建独立连接
-                let mut client =
-                    crate::futu::openapi::OpenApiClient::new(&futu_host, futu_port);
-                match client.connect().await {
-                    Ok(()) => {
-                        // 逐只拉取，每只独立判断拉取天数，拉取后验证连续性
-                        let mut no_permission_markets: std::collections::HashSet<crate::models::Market> =
-                            std::collections::HashSet::new();
-                        let mut fetched = 0u32;
-                        let today_str = chrono::Local::now().format("%Y-%m-%d").to_string();
-                        for (i, stock) in daily_codes.iter().enumerate() {
-                            if no_permission_markets.contains(&stock.market) {
-                                continue;
-                            }
-
-                            // 今天已拉取过 → 跳过
-                            {
-                                let de = daily_engine_clone.lock().await;
-                                if de.last_fetched_date(stock) == Some(today_str.as_str()) {
-                                    continue;
-                                }
-                            }
-
-                            // 确定拉取天数：无缓存→全量，有缓存→gap+5 自适应
-                            let (fetch_days, last_date) = {
-                                let de = daily_engine_clone.lock().await;
-                                match de.last_kline_date(stock) {
-                                    Some(ld) => {
-                                        let gap = date_gap_days(&ld, &today_str);
-                                        let days = (gap + 5).max(5).min(daily_days);
-                                        (days, Some(ld))
-                                    }
-                                    None => (daily_days, None),
-                                }
-                            };
-
-                            let end = today_str.clone();
-                            let begin = (chrono::Local::now()
-                                - chrono::Duration::days(fetch_days as i64 * 2))
-                                .format("%Y-%m-%d")
-                                .to_string();
-
-                            match client
-                                .request_history_kline(stock, &begin, &end, fetch_days)
-                                .await
-                            {
-                                Ok(klines) => {
-                                    if klines.is_empty() {
-                                        continue;
-                                    }
-                                    // 验证连续性：缓存尾部日期必须出现在新数据中
-                                    let mut de = daily_engine_clone.lock().await;
-                                    if let Some(ref ld) = last_date {
-                                        let has_overlap = klines.iter().any(|k| &k.date == ld);
-                                        if has_overlap {
-                                            let mut data = std::collections::HashMap::new();
-                                            data.insert(stock.clone(), klines);
-                                            de.merge_update(data);
-                                        } else {
-                                            warn!(
-                                                "{}: cache discontinuous (last_date={}, fetched {}~{}), replacing",
-                                                stock.display_code(), ld,
-                                                klines.first().map(|k| k.date.as_str()).unwrap_or("?"),
-                                                klines.last().map(|k| k.date.as_str()).unwrap_or("?"),
-                                            );
-                                            de.replace_stock(stock.clone(), klines);
-                                        }
-                                    } else {
-                                        let mut data = std::collections::HashMap::new();
-                                        data.insert(stock.clone(), klines);
-                                        de.merge_update(data);
-                                    }
-                                    de.mark_fetched(stock, &today_str);
-                                    fetched += 1;
-                                }
-                                Err(e) => {
-                                    let msg = format!("{}", e);
-                                    let is_permission = msg.contains("permission")
-                                        || msg.contains("未开通")
-                                        || msg.contains("no quota")
-                                        || msg.contains("not available");
-                                    if is_permission {
-                                        warn!(
-                                            "{} market no permission, skipping: {}",
-                                            stock.market, msg
-                                        );
-                                        no_permission_markets.insert(stock.market);
-                                    } else {
-                                        warn!(
-                                            "Failed to get klines for {}: {}",
-                                            stock.display_code(), msg
-                                        );
-                                    }
-                                }
-                            }
-
-                            // 更新进度
-                            {
-                                let mut state = dash_for_daily.lock().await;
-                                state.daily_kline_status =
-                                    format!("日K拉取中({}/{})", i + 1, total);
-                            }
-
-                            // 每 10 只存盘一次 + 同步 dashboard
-                            if (i + 1) % 10 == 0 || i + 1 == total {
-                                let de = daily_engine_clone.lock().await;
-                                de.save_cache();
-                                let mut state = dash_for_daily.lock().await;
-                                state.daily_indicators = de.get_indicators().clone();
-                                state.daily_signals = de.get_signals().clone();
-                            }
-
-                            // 间隔 200ms 防限流
-                            if i + 1 < total {
-                                tokio::time::sleep(Duration::from_millis(200)).await;
-                            }
-                        }
-
-                        // 最终状态
-                        {
-                            let de = daily_engine_clone.lock().await;
-                            let mut state = dash_for_daily.lock().await;
-                            state.daily_indicators = de.get_indicators().clone();
-                            state.daily_signals = de.get_signals().clone();
-                            let sig_count: usize =
-                                state.daily_signals.values().map(|v| v.len()).sum();
-                            state.daily_kline_status =
-                                format!("日K:{}只 信号:{}", de.stock_count(), sig_count);
-                            info!(
-                                "Daily K-line complete: fetched {}, total {}, {} signals",
-                                fetched, de.stock_count(), sig_count
-                            );
-                        }
-
-                        client.disconnect().await;
-                    }
-                    Err(e) => {
-                        let mut state = dash_for_daily.lock().await;
-                        state.daily_kline_status = "日K连接失败".to_string();
-                        warn!("Daily K-line connect failed: {}", e);
-                    }
-                }
+                run_daily_kline_cycle(
+                    &futu_host,
+                    futu_port,
+                    &daily_codes,
+                    &daily_engine_clone,
+                    &dash_for_daily,
+                    daily_days,
+                )
+                .await;
             }
         }))
     } else {
@@ -790,6 +649,18 @@ async fn cmd_test_ocr(_config: AppConfig) -> Result<()> {
 }
 
 /// 计算两个日期字符串之间的自然日间隔（"YYYY-MM-DD" 格式）
+/// 判断错误信息是否为市场权限不足
+fn is_permission_error(msg: &str) -> bool {
+    msg.contains("无权限")
+        || msg.contains("权限")
+        || msg.contains("permission")
+        || msg.contains("未开通")
+        || msg.contains("no quota")
+        || msg.contains("not available")
+        || msg.contains("暂不提供")
+        || msg.contains("暂不支持")
+}
+
 fn date_gap_days(from: &str, to: &str) -> u32 {
     let from_date = match chrono::NaiveDate::parse_from_str(from, "%Y-%m-%d") {
         Ok(d) => d,
@@ -800,4 +671,227 @@ fn date_gap_days(from: &str, to: &str) -> u32 {
         Err(_) => return u32::MAX,
     };
     (to_date - from_date).num_days().max(0) as u32
+}
+
+/// 按市场探测权限：每个市场试拉一只股票的K线，返回无权限的市场集合
+async fn probe_market_permissions(
+    client: &mut crate::futu::openapi::OpenApiClient,
+    stocks: &[StockCode],
+) -> std::collections::HashSet<crate::models::Market> {
+    let mut no_permission = std::collections::HashSet::new();
+    let today_str = chrono::Local::now().format("%Y-%m-%d").to_string();
+    let probe_begin = (chrono::Local::now() - chrono::Duration::days(5))
+        .format("%Y-%m-%d")
+        .to_string();
+    let mut probed = std::collections::HashSet::new();
+
+    for stock in stocks {
+        if probed.contains(&stock.market) || stock.market == crate::models::Market::Unknown {
+            continue;
+        }
+        probed.insert(stock.market);
+        match client
+            .request_history_kline(stock, &probe_begin, &today_str, 2)
+            .await
+        {
+            Ok(_) => {
+                info!("市场权限检测: {} ✓", stock.market);
+            }
+            Err(e) => {
+                let msg = format!("{}", e);
+                if is_permission_error(&msg) {
+                    info!("市场权限检测: {} ✗ 无权限", stock.market);
+                    no_permission.insert(stock.market);
+                } else {
+                    warn!("市场权限检测: {} 探测失败 ({})", stock.market, msg);
+                }
+            }
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+
+    if !no_permission.is_empty() {
+        let skipped: Vec<String> = no_permission.iter().map(|m| format!("{}", m)).collect();
+        info!(
+            "以下市场无权限，将跳过日K拉取: {}",
+            skipped.join(", ")
+        );
+    }
+
+    no_permission
+}
+
+/// 拉取单只股票的日K线并合并到引擎缓存，返回 Ok(true) 表示成功拉取新数据
+///
+/// 返回 Err 且 is_permission_error 为 true 时，调用方应将该市场加入无权限集合。
+async fn fetch_and_merge_stock_kline(
+    client: &mut crate::futu::openapi::OpenApiClient,
+    stock: &StockCode,
+    engine: &Mutex<DailyAnalysisEngine>,
+    today: &str,
+    daily_days: u32,
+) -> Result<bool> {
+    // 今天已拉取过 → 跳过
+    {
+        let de = engine.lock().await;
+        if de.last_fetched_date(stock) == Some(today) {
+            return Ok(false);
+        }
+    }
+
+    // 确定拉取天数：无缓存→全量，有缓存→gap+5 自适应
+    let (fetch_days, last_date) = {
+        let de = engine.lock().await;
+        match de.last_kline_date(stock) {
+            Some(ld) => {
+                let gap = date_gap_days(&ld, today);
+                let days = (gap + 5).max(5).min(daily_days);
+                (days, Some(ld))
+            }
+            None => (daily_days, None),
+        }
+    };
+
+    let end = today.to_string();
+    let begin = (chrono::Local::now() - chrono::Duration::days(fetch_days as i64 * 2))
+        .format("%Y-%m-%d")
+        .to_string();
+
+    let klines = client
+        .request_history_kline(stock, &begin, &end, fetch_days)
+        .await?;
+
+    if klines.is_empty() {
+        return Ok(false);
+    }
+
+    // 验证连续性：缓存尾部日期必须出现在新数据中
+    let mut de = engine.lock().await;
+    if let Some(ref ld) = last_date {
+        let has_overlap = klines.iter().any(|k| &k.date == ld);
+        if has_overlap {
+            let mut data = std::collections::HashMap::new();
+            data.insert(stock.clone(), klines);
+            de.merge_update(data);
+        } else {
+            warn!(
+                "{}: cache discontinuous (last_date={}, fetched {}~{}), replacing",
+                stock.display_code(),
+                ld,
+                klines.first().map(|k| k.date.as_str()).unwrap_or("?"),
+                klines.last().map(|k| k.date.as_str()).unwrap_or("?"),
+            );
+            de.replace_stock(stock.clone(), klines);
+        }
+    } else {
+        let mut data = std::collections::HashMap::new();
+        data.insert(stock.clone(), klines);
+        de.merge_update(data);
+    }
+    de.mark_fetched(stock, today);
+
+    Ok(true)
+}
+
+/// 执行一轮日K线拉取：连接 FutuOpenD、探测权限、逐只拉取、保存缓存、更新 dashboard
+async fn run_daily_kline_cycle(
+    futu_host: &str,
+    futu_port: u16,
+    daily_codes: &[StockCode],
+    daily_engine: &Arc<Mutex<DailyAnalysisEngine>>,
+    dash_state: &Arc<Mutex<DashboardState>>,
+    daily_days: u32,
+) {
+    let total = daily_codes.len();
+    info!("Fetching daily K-line data ({}只)...", total);
+    {
+        let mut state = dash_state.lock().await;
+        state.daily_kline_status = format!("日K拉取中(0/{})", total);
+    }
+
+    let mut client = crate::futu::openapi::OpenApiClient::new(futu_host, futu_port);
+    match client.connect().await {
+        Ok(()) => {
+            let mut no_permission_markets =
+                probe_market_permissions(&mut client, daily_codes).await;
+            let today_str = chrono::Local::now().format("%Y-%m-%d").to_string();
+
+            let mut fetched = 0u32;
+            for (i, stock) in daily_codes.iter().enumerate() {
+                if no_permission_markets.contains(&stock.market) {
+                    continue;
+                }
+
+                match fetch_and_merge_stock_kline(
+                    &mut client,
+                    stock,
+                    daily_engine,
+                    &today_str,
+                    daily_days,
+                )
+                .await
+                {
+                    Ok(true) => fetched += 1,
+                    Ok(false) => {}
+                    Err(e) => {
+                        let msg = format!("{}", e);
+                        if is_permission_error(&msg) {
+                            warn!("{} market no permission, skipping: {}", stock.market, msg);
+                            no_permission_markets.insert(stock.market);
+                        } else {
+                            warn!(
+                                "Failed to get klines for {}: {}",
+                                stock.display_code(),
+                                msg
+                            );
+                        }
+                    }
+                }
+
+                // 更新进度
+                {
+                    let mut state = dash_state.lock().await;
+                    state.daily_kline_status = format!("日K拉取中({}/{})", i + 1, total);
+                }
+
+                // 每 10 只存盘一次 + 同步 dashboard
+                if (i + 1) % 10 == 0 || i + 1 == total {
+                    let de = daily_engine.lock().await;
+                    de.save_cache();
+                    let mut state = dash_state.lock().await;
+                    state.daily_indicators = de.get_indicators().clone();
+                    state.daily_signals = de.get_signals().clone();
+                }
+
+                // 间隔 200ms 防限流
+                if i + 1 < total {
+                    tokio::time::sleep(Duration::from_millis(200)).await;
+                }
+            }
+
+            // 最终状态
+            {
+                let de = daily_engine.lock().await;
+                let mut state = dash_state.lock().await;
+                state.daily_indicators = de.get_indicators().clone();
+                state.daily_signals = de.get_signals().clone();
+                let sig_count: usize = state.daily_signals.values().map(|v| v.len()).sum();
+                state.daily_kline_status =
+                    format!("日K:{}只 信号:{}", de.stock_count(), sig_count);
+                info!(
+                    "Daily K-line complete: fetched {}, total {}, {} signals",
+                    fetched,
+                    de.stock_count(),
+                    sig_count
+                );
+            }
+
+            client.disconnect().await;
+        }
+        Err(e) => {
+            let mut state = dash_state.lock().await;
+            state.daily_kline_status = "日K连接失败".to_string();
+            warn!("Daily K-line connect failed: {}", e);
+        }
+    }
 }
