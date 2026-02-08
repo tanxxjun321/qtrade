@@ -19,7 +19,7 @@
 - **macOS**（依赖 Accessibility API / Core Graphics / Vision 框架）
 - **Rust 1.70+**
 - **富途牛牛 App**（已登录，自选股列表非空）
-- [FutuOpenD](https://www.futunn.com/download/OpenAPI)（日 K 线分析需要，不论数据源；详见 [使用指南](docs/OPEND_GUIDE.md)）
+- [FutuOpenD](https://openapi.futunn.com/futu-api-doc/quick/opend-base.html)（日 K 线分析需要，不论数据源；详见 [使用指南](docs/OPEND_GUIDE.md)）
 
 ## 快速开始
 

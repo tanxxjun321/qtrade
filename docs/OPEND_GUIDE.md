@@ -17,11 +17,16 @@ qtrade 在以下场景依赖 FutuOpenD：
 
 ## 下载与安装
 
-**下载地址**：[https://www.futunn.com/download/OpenAPI](https://www.futunn.com/download/OpenAPI)
+**官方介绍**：[可视化 OpenD](https://openapi.futunn.com/futu-api-doc/quick/opend-base.html)
 
-提供两种版本：
-- **可视化版（推荐）** — 带 GUI，适合日常使用
-- **命令行版** — 适合服务器 / 无头部署
+**直接下载**（可视化版，推荐）：
+
+| 系统 | 下载链接 |
+|------|---------|
+| Windows | [下载](https://www.futunn.com/download/fetch-lasted-link?name=opend-windows) |
+| macOS | [下载](https://www.futunn.com/download/fetch-lasted-link?name=opend-macos) |
+| CentOS | [下载](https://www.futunn.com/download/fetch-lasted-link?name=opend-centos) |
+| Ubuntu | [下载](https://www.futunn.com/download/fetch-lasted-link?name=opend-ubuntu) |
 
 **官方文档**：[https://openapi.futunn.com/futu-api-doc/](https://openapi.futunn.com/futu-api-doc/)
 
@@ -122,8 +127,7 @@ daily_kline_enabled = false
 
 ## 参考链接
 
-- [OpenD 下载](https://www.futunn.com/download/OpenAPI)
+- [可视化 OpenD 介绍与下载](https://openapi.futunn.com/futu-api-doc/quick/opend-base.html)
+- [命令行 OpenD 指南](https://openapi.futunn.com/futu-api-doc/opend/opend-cmd.html)
 - [官方 API 文档](https://openapi.futunn.com/futu-api-doc/)
-- [可视化 OpenD 指南](https://openapi.futunn.com/futu-api-doc/en/quick/opend-base.html)
-- [命令行 OpenD 指南](https://openapi.futunn.com/futu-api-doc/en/opend/opend-cmd.html)
-- [订阅配额与权限](https://openapi.futunn.com/futu-api-doc/en/intro/authority.html)
+- [订阅配额与权限](https://openapi.futunn.com/futu-api-doc/intro/authority.html)
