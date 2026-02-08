@@ -761,7 +761,7 @@ async fn fetch_and_merge_stock_kline(
         match de.last_kline_date(stock) {
             Some(ld) => {
                 let gap = date_gap_days(&ld, today);
-                let days = (gap + 5).max(5).min(daily_days);
+                let days = gap.saturating_add(5).max(5).min(daily_days);
                 (days, Some(ld))
             }
             None => (daily_days, None),
