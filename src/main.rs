@@ -29,7 +29,7 @@ use crate::ui::dashboard::DashboardState;
 #[command(name = "qtrade", about = "量化交易盯盘系统")]
 struct Cli {
     #[command(subcommand)]
-    command: Commands,
+    command: Option<Commands>,
 
     /// 配置文件路径
     #[arg(short, long)]
@@ -64,7 +64,9 @@ async fn main() -> Result<()> {
     let env_filter = tracing_subscriber::EnvFilter::try_from_default_env()
         .unwrap_or_else(|_| config.general.log_level.parse().unwrap_or_default());
 
-    let is_tui = matches!(cli.command, Commands::Start);
+    let command = cli.command.unwrap_or(Commands::Start);
+
+    let is_tui = matches!(command, Commands::Start);
     if is_tui {
         // TUI 模式：日志写文件，避免干扰终端界面
         let log_file = std::fs::File::create("qtrade.log")
@@ -81,7 +83,7 @@ async fn main() -> Result<()> {
             .init();
     }
 
-    match cli.command {
+    match command {
         Commands::Start => cmd_start(config).await,
         Commands::Watchlist => cmd_watchlist(config),
         Commands::Debug => cmd_debug(config),
