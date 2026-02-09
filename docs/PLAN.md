@@ -37,9 +37,9 @@ qtrade/
 ├── config/
 │   └── config.toml.example
 ├── src/
-│   ├── main.rs                     # 入口 + CLI (clap): start / watchlist / debug / test-api / test-ocr
+│   ├── main.rs                     # 入口 + CLI (clap): start(默认) / watchlist / debug / test-api / test-ocr
 │   ├── config.rs                   # TOML 配置加载 (serde)
-│   ├── models.rs                   # 核心数据模型（Market, StockCode, QuoteSnapshot, Signal, UsMarketSession 等）
+│   ├── models.rs                   # 核心数据模型（Market, StockCode, QuoteSnapshot, Signal(含MsMacdBuy/Sell), UsMarketSession 等）
 │   ├── futu/
 │   │   ├── mod.rs
 │   │   ├── watchlist.rs            # 读取 App 本地 plist 自选股列表
@@ -52,10 +52,10 @@ qtrade/
 │   │   └── parser.rs               # 从原始文本/AX值解析为 QuoteSnapshot
 │   ├── analysis/
 │   │   ├── mod.rs
-│   │   ├── daily.rs                # 日K线分析引擎（JSON 缓存 + 增量更新 + MA/MACD/RSI 信号）
+│   │   ├── daily.rs                # 日K线分析引擎（JSON 缓存 + 增量更新 + MA/MACD/RSI/MS-MACD 信号）
 │   │   ├── engine.rs               # 事件型 tick 信号检测（VWAP偏离/新高新低/急涨急跌/振幅突破/量能突变）
 │   │   ├── indicators.rs           # SMA / EMA / MACD / RSI 纯计算
-│   │   └── signals.rs              # 信号判定（金叉/死叉、超买超卖、放量检测，供日线引擎使用）
+│   │   └── signals.rs              # 信号判定（金叉/死叉、超买超卖、放量、MS-MACD拐点检测，供日线引擎使用）
 │   ├── alerts/
 │   │   ├── mod.rs
 │   │   ├── manager.rs              # 规则评估 + 冷却机制
@@ -191,10 +191,11 @@ prost-build = "0.13"
 ### Step 5: 技术指标分析 ✅
 - 实现 `analysis/indicators.rs`：MA（多周期）、MACD、RSI 纯计算函数
 - 实现 `analysis/engine.rs`：事件型 tick 信号检测引擎（VWAP偏离、日内新高/新低、急涨急跌、振幅突破、量能突变），带滞后重置防翻转
-- 实现 `analysis/signals.rs`：金叉/死叉、超买/超卖信号判定（供日线引擎使用）
+- 实现 `analysis/signals.rs`：金叉/死叉、超买/超卖、MS-MACD动能拐点信号判定（供日线引擎使用）
 - 实现 `analysis/daily.rs`：日K线分析引擎（JSON 缓存 + 逐只自适应拉取 + 断点续传）
 - 信号情绪标签：所有信号标注 Sentiment（利多/利空/中性），dashboard 显示 `[利多]日内新高`、`[日利空]MACD 死叉` 等
-- 单元测试（37 个）
+- MS-MACD 动能拐点信号：扫描 DIF/DEA 序列，仅在拐点首日（最后一根K线）触发买入/卖出信号
+- 单元测试（48 个）
 
 ### Step 6: 提醒系统 ✅
 - 实现 `alerts/rules.rs`：涨跌幅阈值、目标价规则（已移除噪声源 SignalRule / VolumeSpikeRule）

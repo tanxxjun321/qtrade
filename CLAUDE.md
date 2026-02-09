@@ -16,9 +16,10 @@ qtrade - 量化交易盯盘系统。从 macOS 上的富途牛牛 App 获取实�
 ## Build & Development Commands
 
 - `cargo build` - 构建项目
-- `cargo test` - 运行所有测试（37 个单元测试）
+- `cargo test` - 运行所有测试（48 个单元测试）
 - `cargo run -- watchlist` - 显示自选股列表（从富途 plist 读取）
-- `cargo run -- start` - 启动盯盘系统（ratatui TUI）
+- `cargo run` - 启动盯盘系统（`start` 为默认子命令）
+- `cargo run -- start` - 同上，显式指定
 - `cargo run -- test-api` - 测试 FutuOpenD 连接
 - `cargo run -- debug` - 检查 AX 权限并打印 App 元素树
 - `cargo run -- test-ocr` - 测试窗口截图 + Vision OCR 识别效果
@@ -30,9 +31,9 @@ qtrade - 量化交易盯盘系统。从 macOS 上的富途牛牛 App 获取实�
 
 ```
 src/
-├── main.rs                  # CLI 入口 (clap)：start / watchlist / debug / test-api / test-ocr
+├── main.rs                  # CLI 入口 (clap)：start(默认) / watchlist / debug / test-api / test-ocr
 ├── config.rs                # TOML 配置加载 (serde)
-├── models.rs                # 核心数据模型：StockCode, Market, QuoteSnapshot, Signal, Sentiment, DailyKline, TimedSignal, AlertEvent, UsMarketSession
+├── models.rs                # 核心数据模型：StockCode, Market, QuoteSnapshot, Signal(含MsMacdBuy/Sell), Sentiment, DailyKline, TimedSignal, AlertEvent, UsMarketSession
 ├── futu/
 │   ├── watchlist.rs         # 读取 plist 自选股（自动扫描用户目录）
 │   ├── accessibility.rs     # macOS AXUIElement 读取 App 窗口 + AX 表格 frame 检测
@@ -42,10 +43,10 @@ src/
 │   ├── provider.rs          # DataProviderKind 枚举分发（AX / OpenAPI / OCR）
 │   └── parser.rs            # 文本 → QuoteSnapshot 解析
 ├── analysis/
-│   ├── daily.rs             # 日K线分析引擎（JSON 缓存 + 增量更新 + MA/MACD/RSI 信号）
+│   ├── daily.rs             # 日K线分析引擎（JSON 缓存 + 增量更新 + MA/MACD/RSI/MS-MACD 信号）
 │   ├── indicators.rs        # SMA / EMA / MACD / RSI 纯计算
 │   ├── engine.rs            # 事件型 tick 信号检测（VWAP偏离/新高新低/急涨急跌/振幅突破/量能突变）
-│   └── signals.rs           # 金叉/死叉/超买超卖/放量检测（供日线引擎使用）
+│   └── signals.rs           # 金叉/死叉/超买超卖/放量/MS-MACD拐点检测（供日线引擎使用）
 ├── alerts/
 │   ├── rules.rs             # 涨跌幅/目标价规则
 │   ├── manager.rs           # 规则评估 + 冷却机制
@@ -99,7 +100,7 @@ OCR 管线（OcrProvider）：
 - **逐只自适应拉取**：每只股票独立判断 — 无缓存→全量；有缓存→按 gap 自适应天数拉取，拉取后验证与缓存尾部日期重叠确认连续性；无重叠→丢弃旧缓存，全量重拉
 - **断点续传**：每拉取 10 只即存盘 + 同步 dashboard
 - **市场权限**：运行时检测（非依赖订阅状态），无权限市场整体跳过
-- **信号检测**：MA5/10/20/60 金叉死叉、MACD 金叉死叉、RSI6/12/24 超买超卖
+- **信号检测**：MA5/10/20/60 金叉死叉、MACD 金叉死叉、RSI6/12/24 超买超卖、MS-MACD 动能拐点买卖
 - **详细策略**：见 `docs/DAILY_KLINE_CACHE.md`
 
 ### TUI 快捷键
