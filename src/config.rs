@@ -176,6 +176,10 @@ pub struct AnalysisConfig {
     #[serde(default = "default_amplitude_breakout_pct")]
     pub amplitude_breakout_pct: f64,
 
+    /// 量能突变倍数阈值（增量成交量 / 窗口均值）
+    #[serde(default = "default_volume_spike_ratio")]
+    pub volume_spike_ratio: f64,
+
     /// 信号显示保持时间 (分钟)
     #[serde(default = "default_tick_signal_display_minutes")]
     pub tick_signal_display_minutes: u64,
@@ -192,6 +196,7 @@ impl Default for AnalysisConfig {
             rapid_move_pct: default_rapid_move_pct(),
             rapid_move_window: default_rapid_move_window(),
             amplitude_breakout_pct: default_amplitude_breakout_pct(),
+            volume_spike_ratio: default_volume_spike_ratio(),
             tick_signal_display_minutes: default_tick_signal_display_minutes(),
         }
     }
@@ -223,6 +228,10 @@ fn default_rapid_move_window() -> u32 {
 
 fn default_amplitude_breakout_pct() -> f64 {
     5.0
+}
+
+fn default_volume_spike_ratio() -> f64 {
+    3.0
 }
 
 fn default_tick_signal_display_minutes() -> u64 {

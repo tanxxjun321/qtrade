@@ -1,19 +1,22 @@
 //! 分析引擎：事件型 tick 信号检测
 //!
-//! 检测 4 类事件信号（触发一次后保持显示，不频繁翻转）：
+//! 检测 5 类事件信号（触发一次后保持显示，不频繁翻转）：
 //! - VWAP 偏离：价格偏离成交均价超阈值
 //! - 日内新高/新低突破：突破已知极值
 //! - 急涨急跌：短窗口内价格剧烈变动
 //! - 振幅突破：日内振幅超阈值
+//! - 量能突变：增量成交量相对窗口均值突增
 
 use std::collections::HashMap;
 use crate::config::AnalysisConfig;
 use crate::models::{QuoteSnapshot, Signal, StockCode};
 
-/// 每只股票的价格历史窗口（急涨急跌检测需要）
+/// 每只股票的价格/量能历史窗口
 #[derive(Debug)]
 struct PriceWindow {
     prices: Vec<f64>,
+    /// 增量成交量序列（相邻快照的 cumulative volume 之差）
+    vol_deltas: Vec<u64>,
     max_size: usize,
 }
 
@@ -21,14 +24,22 @@ impl PriceWindow {
     fn new(max_size: usize) -> Self {
         Self {
             prices: Vec::with_capacity(max_size),
+            vol_deltas: Vec::with_capacity(max_size),
             max_size,
         }
     }
 
-    fn push(&mut self, price: f64) {
+    fn push_price(&mut self, price: f64) {
         self.prices.push(price);
         if self.prices.len() > self.max_size {
             self.prices.remove(0);
+        }
+    }
+
+    fn push_vol_delta(&mut self, delta: u64) {
+        self.vol_deltas.push(delta);
+        if self.vol_deltas.len() > self.max_size {
+            self.vol_deltas.remove(0);
         }
     }
 }
@@ -46,6 +57,10 @@ struct TickState {
     vwap_below_triggered: bool,
     /// 振幅突破已触发（日内仅一次）
     amplitude_triggered: bool,
+    /// 上一次累计成交量（用于计算增量）
+    prev_cumulative_volume: u64,
+    /// 量能突变已触发（滞后重置）
+    volume_spike_triggered: bool,
 }
 
 /// 分析引擎
@@ -60,6 +75,7 @@ pub struct AnalysisEngine {
     rapid_move_pct: f64,
     rapid_move_window: usize,
     amplitude_breakout_pct: f64,
+    volume_spike_ratio: f64,
 }
 
 impl AnalysisEngine {
@@ -72,6 +88,7 @@ impl AnalysisEngine {
             rapid_move_pct: config.rapid_move_pct,
             rapid_move_window: config.rapid_move_window as usize,
             amplitude_breakout_pct: config.amplitude_breakout_pct,
+            volume_spike_ratio: config.volume_spike_ratio,
         }
     }
 
@@ -85,9 +102,16 @@ impl AnalysisEngine {
             .windows
             .entry(quote.code.clone())
             .or_insert_with(|| PriceWindow::new(window_size));
-        window.push(quote.last_price);
+        window.push_price(quote.last_price);
 
         let ts = self.tick_states.entry(quote.code.clone()).or_default();
+
+        // 计算增量成交量
+        if ts.prev_cumulative_volume > 0 && quote.volume >= ts.prev_cumulative_volume {
+            let delta = quote.volume - ts.prev_cumulative_volume;
+            window.push_vol_delta(delta);
+        }
+        ts.prev_cumulative_volume = quote.volume;
 
         // 1. VWAP 偏离
         if quote.volume > 0 && quote.turnover > 0.0 && quote.last_price > 0.0 {
@@ -145,6 +169,26 @@ impl AnalysisEngine {
             ts.amplitude_triggered = true;
         }
 
+        // 5. 量能突变：增量成交量 vs 窗口均值
+        let deltas = &window.vol_deltas;
+        if deltas.len() >= 3 {
+            let latest = *deltas.last().unwrap() as f64;
+            // 均值不含最新一条，避免自身拉高均值
+            let avg: f64 = deltas[..deltas.len() - 1].iter().map(|d| *d as f64).sum::<f64>()
+                / (deltas.len() - 1) as f64;
+            if avg > 0.0 {
+                let ratio = latest / avg;
+                if ratio >= self.volume_spike_ratio && !ts.volume_spike_triggered {
+                    signals.push(Signal::VolumeSpike { ratio });
+                    ts.volume_spike_triggered = true;
+                }
+                // 滞后重置：回落到 1.5 倍以下
+                if ratio < 1.5 {
+                    ts.volume_spike_triggered = false;
+                }
+            }
+        }
+
         signals
     }
 
@@ -171,6 +215,7 @@ mod tests {
             rapid_move_pct: 1.0,
             rapid_move_window: 5,
             amplitude_breakout_pct: 5.0,
+            volume_spike_ratio: 3.0,
             tick_signal_display_minutes: 5,
         }
     }
@@ -246,6 +291,35 @@ mod tests {
         // 第二次不再触发
         let sigs = engine.process(&q);
         assert!(sigs.iter().all(|s| !matches!(s, Signal::AmplitudeBreakout { .. })));
+    }
+
+    #[test]
+    fn test_engine_volume_spike() {
+        let config = AnalysisConfig {
+            volume_spike_ratio: 3.0,
+            rapid_move_window: 2,
+            ..default_config()
+        };
+        let mut engine = AnalysisEngine::new(&config);
+
+        // 累计成交量递增：1000, 2000, 3000, 4000 → 增量均为 1000
+        for cum_vol in [1000u64, 2000, 3000, 4000] {
+            let mut q = make_quote("00700", 100.0);
+            q.volume = cum_vol;
+            engine.process(&q);
+        }
+
+        // 突然放量：增量 5000（5x 均值）→ 触发
+        let mut q = make_quote("00700", 100.0);
+        q.volume = 9000; // delta = 9000 - 4000 = 5000
+        let sigs = engine.process(&q);
+        assert!(sigs.iter().any(|s| matches!(s, Signal::VolumeSpike { ratio } if *ratio >= 3.0)));
+
+        // 已触发，不重复
+        let mut q2 = make_quote("00700", 100.0);
+        q2.volume = 14000; // delta = 5000, 仍高但已触发
+        let sigs = engine.process(&q2);
+        assert!(sigs.iter().all(|s| !matches!(s, Signal::VolumeSpike { .. })));
     }
 
     #[test]
