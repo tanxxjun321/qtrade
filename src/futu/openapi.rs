@@ -152,7 +152,7 @@ mod pb_basic_qot {
         #[prost(string, optional, tag = "3")]
         pub list_time: Option<String>,
         #[prost(double, optional, tag = "4")]
-        pub price_spread: Option<f64>, // 涨跌额
+        pub price_spread: Option<f64>, // 价差（tick size，非涨跌额）
         #[prost(string, optional, tag = "5")]
         pub update_time: Option<String>,
         #[prost(double, optional, tag = "6")]
@@ -928,7 +928,7 @@ fn parse_basic_qot_list(s2c: Option<&pb_basic_qot::S2C>) -> Vec<QuoteSnapshot> {
 
             let cur_price = qot.cur_price.unwrap_or(0.0);
             let last_close = qot.last_close_price.unwrap_or(0.0);
-            let change = qot.price_spread.unwrap_or(0.0);
+            let change = cur_price - last_close;
             let change_pct = if last_close > 0.0 {
                 change / last_close * 100.0
             } else {
@@ -973,7 +973,7 @@ fn parse_basic_qot_json(resp: &serde_json::Value) -> Vec<QuoteSnapshot> {
 
             let cur_price = qot.get("curPrice").and_then(|v| v.as_f64()).unwrap_or(0.0);
             let last_close = qot.get("lastClosePrice").and_then(|v| v.as_f64()).unwrap_or(0.0);
-            let change = qot.get("priceSpread").and_then(|v| v.as_f64()).unwrap_or(0.0);
+            let change = cur_price - last_close;
             let change_pct = if last_close > 0.0 {
                 change / last_close * 100.0
             } else {
