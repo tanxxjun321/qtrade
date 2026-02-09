@@ -351,6 +351,10 @@ pub enum Signal {
     RapidMove { change_pct: f64 },
     /// 振幅突破
     AmplitudeBreakout { amplitude_pct: f64 },
+    /// MS-MACD 买入（空头区域动能衰减）
+    MsMacdBuy,
+    /// MS-MACD 卖出（多头区域动能衰减）
+    MsMacdSell,
 }
 
 impl Signal {
@@ -373,6 +377,8 @@ impl Signal {
                 if *change_pct > 0.0 { Sentiment::Bullish } else { Sentiment::Bearish }
             }
             Signal::AmplitudeBreakout { .. } => Sentiment::Neutral,
+            Signal::MsMacdBuy => Sentiment::Bullish,
+            Signal::MsMacdSell => Sentiment::Bearish,
         }
     }
 }
@@ -412,6 +418,8 @@ impl fmt::Display for Signal {
             Signal::AmplitudeBreakout { amplitude_pct } => {
                 write!(f, "振幅突破{:.1}%", amplitude_pct)
             }
+            Signal::MsMacdBuy => write!(f, "MS-MACD 买入"),
+            Signal::MsMacdSell => write!(f, "MS-MACD 卖出"),
         }
     }
 }

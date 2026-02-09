@@ -26,6 +26,9 @@ pub fn detect_signals(
 
         // MACD 金叉/死叉
         detect_macd_cross(current, prev, &mut signals);
+
+        // MS-MACD 动能拐点
+        detect_ms_macd_signals(current, prev, &mut signals);
     }
 
     // RSI 超买/超卖
@@ -138,6 +141,42 @@ fn detect_rsi_signals(current: &TechnicalIndicators, signals: &mut Vec<Signal>) 
     }
 }
 
+/// 检测 MS-MACD 动能拐点买卖信号
+///
+/// 买入：DIFF < DEA < 0（深空头）且 |DIFF| 缩短（空头动能衰减）
+/// 卖出：DIFF > DEA > 0（深多头）且 DIFF 缩短（多头动能衰减）
+fn detect_ms_macd_signals(
+    current: &TechnicalIndicators,
+    previous: &TechnicalIndicators,
+    signals: &mut Vec<Signal>,
+) {
+    if let (Some(curr_dif), Some(curr_dea), Some(prev_dif)) = (
+        current.macd_dif,
+        current.macd_dea,
+        previous.macd_dif,
+    ) {
+        // 买入：空头区域动能衰减
+        if curr_dif < 0.0
+            && curr_dea < 0.0
+            && curr_dif < curr_dea
+            && prev_dif < 0.0
+            && curr_dif.abs() < prev_dif.abs()
+        {
+            signals.push(Signal::MsMacdBuy);
+        }
+
+        // 卖出：多头区域动能衰减
+        if curr_dif > 0.0
+            && curr_dea > 0.0
+            && curr_dif > curr_dea
+            && prev_dif > 0.0
+            && curr_dif < prev_dif
+        {
+            signals.push(Signal::MsMacdSell);
+        }
+    }
+}
+
 /// 检测放量（最近一根 vs 前 N 根平均）
 fn detect_volume_spike(volumes: &[u64], signals: &mut Vec<Signal>) {
     if volumes.len() < 6 {
@@ -214,5 +253,41 @@ mod tests {
 
         let signals = detect_signals(&current, None, &[], &volumes);
         assert!(signals.iter().any(|s| matches!(s, Signal::VolumeSpike { .. })));
+    }
+
+    #[test]
+    fn test_ms_macd_buy_signal() {
+        // 空头区域：DIFF < DEA < 0，且 |DIFF| 缩短
+        let prev = TechnicalIndicators {
+            macd_dif: Some(-5.0), // 昨日 |DIFF| = 5.0
+            macd_dea: Some(-3.0),
+            ..Default::default()
+        };
+        let current = TechnicalIndicators {
+            macd_dif: Some(-4.0), // 今日 |DIFF| = 4.0 < 5.0，绿柱缩短
+            macd_dea: Some(-2.5), // DIFF < DEA < 0
+            ..Default::default()
+        };
+
+        let signals = detect_signals(&current, Some(&prev), &[], &[]);
+        assert!(signals.iter().any(|s| matches!(s, Signal::MsMacdBuy)));
+    }
+
+    #[test]
+    fn test_ms_macd_sell_signal() {
+        // 多头区域：DIFF > DEA > 0，且 DIFF 缩短
+        let prev = TechnicalIndicators {
+            macd_dif: Some(5.0), // 昨日 DIFF = 5.0
+            macd_dea: Some(3.0),
+            ..Default::default()
+        };
+        let current = TechnicalIndicators {
+            macd_dif: Some(4.0), // 今日 DIFF = 4.0 < 5.0，红柱缩短
+            macd_dea: Some(2.5), // DIFF > DEA > 0
+            ..Default::default()
+        };
+
+        let signals = detect_signals(&current, Some(&prev), &[], &[]);
+        assert!(signals.iter().any(|s| matches!(s, Signal::MsMacdSell)));
     }
 }
