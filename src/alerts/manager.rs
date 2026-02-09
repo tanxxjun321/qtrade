@@ -1,10 +1,12 @@
-//! 提醒管理器：规则评估 + 冷却机制
+//! 提醒管理器：穿越检测 + 通知
+//!
+//! 只在 change_pct 从 < 阈值 穿越到 >= 阈值时触发，
+//! 不会因冷启动或持续超阈值而反复报警。
 
 use std::collections::HashMap;
-use std::time::{Duration, Instant};
 use tracing::{debug, info};
 
-use crate::models::{AlertEvent, QuoteSnapshot};
+use crate::models::{AlertEvent, QuoteSnapshot, StockCode};
 
 use super::notify::Notifier;
 use super::rules::AlertRule;
@@ -13,10 +15,8 @@ use super::rules::AlertRule;
 pub struct AlertManager {
     /// 注册的规则
     rules: Vec<Box<dyn AlertRule>>,
-    /// 冷却记录：(股票代码, 规则名) → 上次触发时间
-    cooldowns: HashMap<(String, String), Instant>,
-    /// 冷却时间
-    cooldown_duration: Duration,
+    /// 每只股票上一次的 change_pct（用于穿越检测）
+    prev_change_pct: HashMap<StockCode, f64>,
     /// 通知器
     notifier: Notifier,
     /// 提醒历史
@@ -26,11 +26,10 @@ pub struct AlertManager {
 }
 
 impl AlertManager {
-    pub fn new(cooldown_secs: u64, notifier: Notifier) -> Self {
+    pub fn new(notifier: Notifier) -> Self {
         Self {
             rules: Vec::new(),
-            cooldowns: HashMap::new(),
-            cooldown_duration: Duration::from_secs(cooldown_secs),
+            prev_change_pct: HashMap::new(),
             notifier,
             history: Vec::new(),
             enabled: true,
@@ -47,7 +46,7 @@ impl AlertManager {
         self.enabled = enabled;
     }
 
-    /// 评估所有规则
+    /// 评估所有规则（穿越检测：仅在 change_pct 跨越阈值时触发）
     pub async fn evaluate(
         &mut self,
         quote: &QuoteSnapshot,
@@ -56,24 +55,32 @@ impl AlertManager {
             return Vec::new();
         }
 
+        let prev = self.prev_change_pct.insert(quote.code.clone(), quote.change_pct);
         let mut events = Vec::new();
 
         for rule in &self.rules {
             if let Some((message, severity, sentiment)) = rule.evaluate(quote) {
-                let key = (quote.code.display_code(), rule.name().to_string());
-
-                // 检查冷却
-                if let Some(last_trigger) = self.cooldowns.get(&key) {
-                    if last_trigger.elapsed() < self.cooldown_duration {
-                        debug!(
-                            "Alert cooldown active for {} / {}",
-                            quote.code, rule.name()
-                        );
-                        continue;
+                // 穿越检测：首次见到的股票（无 prev）不触发，
+                // 只有上一次 rule 不命中 → 本次命中 才算穿越
+                let was_triggered = match prev {
+                    Some(prev_pct) => {
+                        // 构造一个伪快照用上一次的 change_pct 检测
+                        let mut prev_quote = quote.clone();
+                        prev_quote.change_pct = prev_pct;
+                        rule.evaluate(&prev_quote).is_some()
                     }
+                    None => true, // 首次见到，视为"已在阈值内"，不触发
+                };
+
+                if was_triggered {
+                    debug!(
+                        "Alert already active for {} / {}, skipping",
+                        quote.code, rule.name()
+                    );
+                    continue;
                 }
 
-                // 触发提醒
+                // 穿越确认：上次未命中 → 本次命中 → 触发
                 let event = AlertEvent {
                     code: quote.code.clone(),
                     name: quote.name.clone(),
@@ -89,17 +96,11 @@ impl AlertManager {
                 // 发送通知
                 self.notifier.send(&event).await;
 
-                // 更新冷却
-                self.cooldowns.insert(key, Instant::now());
-
                 // 记录历史
                 self.history.push(event.clone());
                 events.push(event);
             }
         }
-
-        // 清理过期的冷却记录
-        self.cleanup_cooldowns();
 
         events
     }
@@ -108,12 +109,5 @@ impl AlertManager {
     pub fn recent_history(&self, count: usize) -> &[AlertEvent] {
         let start = self.history.len().saturating_sub(count);
         &self.history[start..]
-    }
-
-    /// 清理过期冷却记录
-    fn cleanup_cooldowns(&mut self) {
-        let duration = self.cooldown_duration * 2; // 保留 2 倍冷却时间后清理
-        self.cooldowns
-            .retain(|_, instant| instant.elapsed() < duration);
     }
 }

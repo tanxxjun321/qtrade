@@ -172,6 +172,18 @@ pub struct AnalysisConfig {
     #[serde(default = "default_rapid_move_window")]
     pub rapid_move_window: u32,
 
+    /// 急涨急跌重置阈值 (%)，低于此值后才可再次触发
+    #[serde(default = "default_rapid_move_reset_pct")]
+    pub rapid_move_reset_pct: f64,
+
+    /// 急涨急跌方向效率最低要求（0.0-1.0），过滤震荡
+    #[serde(default = "default_rapid_move_efficiency")]
+    pub rapid_move_efficiency: f64,
+
+    /// 急涨急跌最低绝对变动金额（过滤低价股噪声）
+    #[serde(default = "default_rapid_move_min_change")]
+    pub rapid_move_min_change: f64,
+
     /// 振幅突破阈值 (%)
     #[serde(default = "default_amplitude_breakout_pct")]
     pub amplitude_breakout_pct: f64,
@@ -183,6 +195,10 @@ pub struct AnalysisConfig {
     /// 信号显示保持时间 (分钟)
     #[serde(default = "default_tick_signal_display_minutes")]
     pub tick_signal_display_minutes: u64,
+
+    /// 信号检测预热 tick 数（启动后前 N 个 tick 不产生信号）
+    #[serde(default = "default_warmup_ticks")]
+    pub warmup_ticks: u32,
 }
 
 impl Default for AnalysisConfig {
@@ -195,9 +211,13 @@ impl Default for AnalysisConfig {
             vwap_reset_pct: default_vwap_reset_pct(),
             rapid_move_pct: default_rapid_move_pct(),
             rapid_move_window: default_rapid_move_window(),
+            rapid_move_reset_pct: default_rapid_move_reset_pct(),
+            rapid_move_efficiency: default_rapid_move_efficiency(),
+            rapid_move_min_change: default_rapid_move_min_change(),
             amplitude_breakout_pct: default_amplitude_breakout_pct(),
             volume_spike_ratio: default_volume_spike_ratio(),
             tick_signal_display_minutes: default_tick_signal_display_minutes(),
+            warmup_ticks: default_warmup_ticks(),
         }
     }
 }
@@ -226,6 +246,18 @@ fn default_rapid_move_window() -> u32 {
     5
 }
 
+fn default_rapid_move_reset_pct() -> f64 {
+    0.5
+}
+
+fn default_rapid_move_efficiency() -> f64 {
+    0.6
+}
+
+fn default_rapid_move_min_change() -> f64 {
+    0.05
+}
+
 fn default_amplitude_breakout_pct() -> f64 {
     5.0
 }
@@ -236,6 +268,10 @@ fn default_volume_spike_ratio() -> f64 {
 
 fn default_tick_signal_display_minutes() -> u64 {
     5
+}
+
+fn default_warmup_ticks() -> u32 {
+    3
 }
 
 fn default_log_level() -> String {

@@ -143,9 +143,13 @@ vwap_deviation_pct = 2.0        # VWAP 偏离触发阈值 (%)
 vwap_reset_pct = 1.0            # VWAP 偏离重置阈值 (%)
 rapid_move_pct = 1.0            # 急涨急跌阈值 (%)
 rapid_move_window = 5           # 急涨急跌检测窗口 (快照数)
+rapid_move_reset_pct = 0.5     # 急涨急跌重置阈值 (%)
+rapid_move_efficiency = 0.6    # 急涨急跌方向效率 (0-1)
+rapid_move_min_change = 0.05   # 急涨急跌最低绝对变动 (元)
 amplitude_breakout_pct = 5.0    # 振幅突破阈值 (%)
 volume_spike_ratio = 3.0        # 量能突变倍数阈值
 tick_signal_display_minutes = 5 # 信号显示保持时间 (分钟)
+warmup_ticks = 3               # 启动预热 tick 数
 ```
 
 ### 支持市场

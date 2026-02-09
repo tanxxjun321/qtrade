@@ -221,7 +221,7 @@ async fn cmd_start(config: AppConfig) -> Result<()> {
 
     // 创建提醒管理器
     let notifier = Notifier::new(config.alerts.webhook_url.clone());
-    let mut alert_manager = AlertManager::new(config.alerts.cooldown_secs, notifier);
+    let mut alert_manager = AlertManager::new(notifier);
     if config.alerts.enabled {
         alert_manager.add_rule(Box::new(ChangeThresholdRule::new(
             config.alerts.change_threshold_pct,
