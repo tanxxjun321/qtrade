@@ -27,8 +27,6 @@ pub fn detect_signals(
         // MACD 金叉/死叉
         detect_macd_cross(current, prev, &mut signals);
 
-        // MS-MACD 动能拐点
-        detect_ms_macd_signals(current, prev, &mut signals);
     }
 
     // RSI 超买/超卖
@@ -141,40 +139,66 @@ fn detect_rsi_signals(current: &TechnicalIndicators, signals: &mut Vec<Signal>) 
     }
 }
 
-/// 检测 MS-MACD 动能拐点买卖信号
+/// 扫描 MACD DIF/DEA 序列，检测最近一次 MS-MACD 动能拐点首日
 ///
-/// 买入：DIFF < DEA < 0（深空头）且 |DIFF| 缩短（空头动能衰减）
-/// 卖出：DIFF > DEA > 0（深多头）且 DIFF 缩短（多头动能衰减）
-fn detect_ms_macd_signals(
-    current: &TechnicalIndicators,
-    previous: &TechnicalIndicators,
-    signals: &mut Vec<Signal>,
-) {
-    if let (Some(curr_dif), Some(curr_dea), Some(prev_dif)) = (
-        current.macd_dif,
-        current.macd_dea,
-        previous.macd_dif,
-    ) {
-        // 买入：空头区域动能衰减
-        if curr_dif < 0.0
-            && curr_dea < 0.0
-            && curr_dif < curr_dea
-            && prev_dif < 0.0
-            && curr_dif.abs() < prev_dif.abs()
-        {
-            signals.push(Signal::MsMacdBuy);
-        }
+/// 从后往前扫描最近 `lookback` 根 K 线，找到拐点的**首次发生日**：
+/// - 卖出：当天满足 DIFF > DEA > 0 且 DIFF 缩短，但前一天不满足
+/// - 买入：当天满足 DIFF < DEA < 0 且 |DIFF| 缩短，但前一天不满足
+pub fn detect_ms_macd_from_series(
+    dif: &[Option<f64>],
+    dea: &[Option<f64>],
+    lookback: usize,
+) -> Vec<Signal> {
+    let mut signals = Vec::new();
+    let n = dif.len().min(dea.len());
+    if n < 3 {
+        return signals;
+    }
 
-        // 卖出：多头区域动能衰减
-        if curr_dif > 0.0
-            && curr_dea > 0.0
-            && curr_dif > curr_dea
-            && prev_dif > 0.0
-            && curr_dif < prev_dif
-        {
-            signals.push(Signal::MsMacdSell);
+    let start = (n.saturating_sub(lookback)).max(2);
+
+    // 卖出条件：DIFF > DEA > 0 且 DIFF 缩短
+    let is_sell = |i: usize| -> bool {
+        match (dif[i], dea[i], dif.get(i.wrapping_sub(1)).copied().flatten()) {
+            (Some(cd), Some(ce), Some(pd)) => {
+                cd > 0.0 && ce > 0.0 && cd > ce && pd > 0.0 && cd < pd
+            }
+            _ => false,
+        }
+    };
+
+    // 买入条件：DIFF < DEA < 0 且 |DIFF| 缩短
+    let is_buy = |i: usize| -> bool {
+        match (dif[i], dea[i], dif.get(i.wrapping_sub(1)).copied().flatten()) {
+            (Some(cd), Some(ce), Some(pd)) => {
+                cd < 0.0 && ce < 0.0 && cd < ce && pd < 0.0 && cd.abs() < pd.abs()
+            }
+            _ => false,
+        }
+    };
+
+    // 从后往前扫描，找最近一次拐点首日（当天满足 + 前一天不满足）
+    // 只在拐点首日恰好是最后一根K线（今天）时才触发信号
+    let last = n - 1;
+    for i in (start..n).rev() {
+        if is_sell(i) && !is_sell(i - 1) {
+            if i == last {
+                signals.push(Signal::MsMacdSell);
+            }
+            break;
         }
     }
+
+    for i in (start..n).rev() {
+        if is_buy(i) && !is_buy(i - 1) {
+            if i == last {
+                signals.push(Signal::MsMacdBuy);
+            }
+            break;
+        }
+    }
+
+    signals
 }
 
 /// 检测放量（最近一根 vs 前 N 根平均）
@@ -256,38 +280,63 @@ mod tests {
     }
 
     #[test]
-    fn test_ms_macd_buy_signal() {
-        // 空头区域：DIFF < DEA < 0，且 |DIFF| 缩短
-        let prev = TechnicalIndicators {
-            macd_dif: Some(-5.0), // 昨日 |DIFF| = 5.0
-            macd_dea: Some(-3.0),
-            ..Default::default()
-        };
-        let current = TechnicalIndicators {
-            macd_dif: Some(-4.0), // 今日 |DIFF| = 4.0 < 5.0，绿柱缩短
-            macd_dea: Some(-2.5), // DIFF < DEA < 0
-            ..Default::default()
-        };
+    fn test_ms_macd_buy_on_turning_day() {
+        // 拐点首日恰好是最后一根K线 → 应触发
+        // bar 0: DIF=-2, DEA=-1  (|DIF|扩大中)
+        // bar 1: DIF=-4, DEA=-2  (|DIF|扩大中)
+        // bar 2: DIF=-5, DEA=-3  (|DIF|扩大中，峰值)
+        // bar 3: DIF=-4, DEA=-3.5 (|DIF|缩短！首次拐点，且是最后一根) ← 触发
+        let dif = vec![Some(-2.0), Some(-4.0), Some(-5.0), Some(-4.0)];
+        let dea = vec![Some(-1.0), Some(-2.0), Some(-3.0), Some(-3.5)];
 
-        let signals = detect_signals(&current, Some(&prev), &[], &[]);
+        let signals = detect_ms_macd_from_series(&dif, &dea, 5);
         assert!(signals.iter().any(|s| matches!(s, Signal::MsMacdBuy)));
+        assert_eq!(signals.iter().filter(|s| matches!(s, Signal::MsMacdBuy)).count(), 1);
     }
 
     #[test]
-    fn test_ms_macd_sell_signal() {
-        // 多头区域：DIFF > DEA > 0，且 DIFF 缩短
-        let prev = TechnicalIndicators {
-            macd_dif: Some(5.0), // 昨日 DIFF = 5.0
-            macd_dea: Some(3.0),
-            ..Default::default()
-        };
-        let current = TechnicalIndicators {
-            macd_dif: Some(4.0), // 今日 DIFF = 4.0 < 5.0，红柱缩短
-            macd_dea: Some(2.5), // DIFF > DEA > 0
-            ..Default::default()
-        };
+    fn test_ms_macd_buy_not_on_turning_day() {
+        // 拐点首日是 bar 3，但最后一根是 bar 4 → 不触发
+        // bar 3 是首日，bar 4 继续缩短但不是首日
+        let dif = vec![Some(-2.0), Some(-4.0), Some(-5.0), Some(-4.0), Some(-3.0)];
+        let dea = vec![Some(-1.0), Some(-2.0), Some(-3.0), Some(-3.5), Some(-3.2)];
 
-        let signals = detect_signals(&current, Some(&prev), &[], &[]);
+        let signals = detect_ms_macd_from_series(&dif, &dea, 5);
+        assert!(!signals.iter().any(|s| matches!(s, Signal::MsMacdBuy)));
+    }
+
+    #[test]
+    fn test_ms_macd_sell_on_turning_day() {
+        // 拐点首日恰好是最后一根K线 → 应触发
+        // bar 0: DIF=2, DEA=1
+        // bar 1: DIF=4, DEA=2   (DIFF 扩大)
+        // bar 2: DIF=5, DEA=3   (DIFF 扩大，峰值)
+        // bar 3: DIF=4.5, DEA=3.5 (DIFF 缩短！首次拐点，且是最后一根) ← 触发
+        let dif = vec![Some(2.0), Some(4.0), Some(5.0), Some(4.5)];
+        let dea = vec![Some(1.0), Some(2.0), Some(3.0), Some(3.5)];
+
+        let signals = detect_ms_macd_from_series(&dif, &dea, 5);
         assert!(signals.iter().any(|s| matches!(s, Signal::MsMacdSell)));
+        assert_eq!(signals.iter().filter(|s| matches!(s, Signal::MsMacdSell)).count(), 1);
+    }
+
+    #[test]
+    fn test_ms_macd_sell_not_on_turning_day() {
+        // 拐点首日是 bar 3，最后一根是 bar 4 → 不触发
+        let dif = vec![Some(2.0), Some(4.0), Some(5.0), Some(4.5), Some(4.0)];
+        let dea = vec![Some(1.0), Some(2.0), Some(3.0), Some(3.5), Some(3.8)];
+
+        let signals = detect_ms_macd_from_series(&dif, &dea, 5);
+        assert!(!signals.iter().any(|s| matches!(s, Signal::MsMacdSell)));
+    }
+
+    #[test]
+    fn test_ms_macd_no_signal_continuous_shrink() {
+        // 全部连续缩短，没有拐点首日在 lookback 窗口内
+        let dif = vec![Some(5.0), Some(4.0), Some(3.5)];
+        let dea = vec![Some(3.0), Some(3.0), Some(2.8)];
+
+        let signals = detect_ms_macd_from_series(&dif, &dea, 5);
+        assert!(!signals.iter().any(|s| matches!(s, Signal::MsMacdSell)));
     }
 }

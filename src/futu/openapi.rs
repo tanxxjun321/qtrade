@@ -622,7 +622,7 @@ impl OpenApiClient {
                     "market": stock_code_to_futu_market(stock),
                     "code": &stock.code
                 },
-                "klType": 1,
+                "klType": 2,
                 "rehabType": 1,
                 "beginTime": begin,
                 "endTime": end,

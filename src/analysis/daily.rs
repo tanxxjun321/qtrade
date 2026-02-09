@@ -204,7 +204,13 @@ impl DailyAnalysisEngine {
 
             // 检测信号
             let prev = self.prev_indicators.get(code);
-            let raw_signals = signals::detect_signals(&ti, prev, &close_prices, &volumes);
+            let mut raw_signals = signals::detect_signals(&ti, prev, &close_prices, &volumes);
+
+            // MS-MACD：扫描完整 DIF/DEA 序列，找拐点首日
+            let macd_result = indicators::macd(&close_prices, 12, 26, 9);
+            let ms_macd_signals =
+                signals::detect_ms_macd_from_series(&macd_result.dif, &macd_result.dea, 5);
+            raw_signals.extend(ms_macd_signals);
 
             let timed_signals: Vec<TimedSignal> = raw_signals
                 .into_iter()
