@@ -445,7 +445,7 @@ pub struct TimedSignal {
 impl fmt::Display for TimedSignal {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self.timeframe {
-            Timeframe::Daily => write!(f, "[日{}]{}", self.signal.sentiment(), self.signal),
+            Timeframe::Daily => write!(f, "[日]{}", self.signal),
         }
     }
 }
