@@ -53,21 +53,21 @@ qtrade/
 │   ├── analysis/
 │   │   ├── mod.rs
 │   │   ├── daily.rs                # 日K线分析引擎（JSON 缓存 + 增量更新 + MA/MACD/RSI 信号）
-│   │   ├── engine.rs               # 分析引擎：滚动窗口 + 指标调度（Tick 级别）
+│   │   ├── engine.rs               # 事件型 tick 信号检测（VWAP偏离/新高新低/急涨急跌/振幅突破/量能突变）
 │   │   ├── indicators.rs           # SMA / EMA / MACD / RSI 纯计算
-│   │   └── signals.rs              # 信号判定（金叉/死叉、超买超卖、放量检测）
+│   │   └── signals.rs              # 信号判定（金叉/死叉、超买超卖、放量检测，供日线引擎使用）
 │   ├── alerts/
 │   │   ├── mod.rs
 │   │   ├── manager.rs              # 规则评估 + 冷却机制
-│   │   ├── rules.rs                # 涨跌幅、目标价、放量、指标信号规则
+│   │   ├── rules.rs                # 涨跌幅、目标价规则
 │   │   └── notify.rs               # 通知渠道（终端 + Webhook）
 │   ├── ui/
 │   │   ├── mod.rs
-│   │   └── dashboard.rs            # ratatui TUI 仪表盘（含日线信号显示）
+│   │   └── dashboard.rs            # ratatui TUI 仪表盘（含 tick 事件信号 + 日线信号 + 情绪标签显示）
 │   └── trading/                    # 预留交易模块（第一阶段仅 trait 定义）
 │       ├── mod.rs
 │       └── paper.rs
-└── tests/                        # 单元测试内嵌于各模块中（34 个）
+└── tests/                        # 单元测试内嵌于各模块中（37 个）
 ```
 
 ## 数据流架构
@@ -90,10 +90,11 @@ qtrade/
     │        │        │
 AlertMgr  Analysis  Dashboard
 (涨跌幅   Engine    (ratatui)
- 提醒)    (MA/MACD
-           /RSI)
-    ▲        │
-    └────────┘ (指标信号)
+ 提醒)    (事件型tick信号:
+           VWAP/新高新低/
+           急涨急跌/振幅/量能)
+             │
+    Dashboard ← tick_signals (带情绪标签+时间衰减)
 
 watchlist.rs：从 plist 读取自选股列表（三种方案共用）
 ```
@@ -189,14 +190,15 @@ prost-build = "0.13"
 
 ### Step 5: 技术指标分析 ✅
 - 实现 `analysis/indicators.rs`：MA（多周期）、MACD、RSI 纯计算函数
-- 实现 `analysis/engine.rs`：维护每只股票的价格滚动窗口（Tick 级别），仅供 AlertManager 使用（已从 dashboard 移除 Tick 信号显示）
-- 实现 `analysis/signals.rs`：金叉/死叉、超买/超卖信号判定（Tick 信号仅用于 AlertManager 规则评估）
+- 实现 `analysis/engine.rs`：事件型 tick 信号检测引擎（VWAP偏离、日内新高/新低、急涨急跌、振幅突破、量能突变），带滞后重置防翻转
+- 实现 `analysis/signals.rs`：金叉/死叉、超买/超卖信号判定（供日线引擎使用）
 - 实现 `analysis/daily.rs`：日K线分析引擎（JSON 缓存 + 逐只自适应拉取 + 断点续传）
-- 单元测试（34 个）
+- 信号情绪标签：所有信号标注 Sentiment（利多/利空/中性），dashboard 显示 `[利多]日内新高`、`[日利空]MACD 死叉` 等
+- 单元测试（37 个）
 
 ### Step 6: 提醒系统 ✅
-- 实现 `alerts/rules.rs`：涨跌幅阈值、目标价、指标信号规则
-- 实现 `alerts/manager.rs`：规则评估 + 冷却机制
+- 实现 `alerts/rules.rs`：涨跌幅阈值、目标价规则（已移除噪声源 SignalRule / VolumeSpikeRule）
+- 实现 `alerts/manager.rs`：规则评估 + 冷却机制（简化签名，不再传入 signals/indicators）
 - 实现 `alerts/notify.rs`：终端弹窗 + macOS 通知 + Webhook
 
 ### Step 7: 集成 + 多市场支持 ✅

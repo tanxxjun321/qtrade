@@ -16,7 +16,7 @@ qtrade - 量化交易盯盘系统。从 macOS 上的富途牛牛 App 获取实�
 ## Build & Development Commands
 
 - `cargo build` - 构建项目
-- `cargo test` - 运行所有测试（34 个单元测试）
+- `cargo test` - 运行所有测试（37 个单元测试）
 - `cargo run -- watchlist` - 显示自选股列表（从富途 plist 读取）
 - `cargo run -- start` - 启动盯盘系统（ratatui TUI）
 - `cargo run -- test-api` - 测试 FutuOpenD 连接
@@ -32,7 +32,7 @@ qtrade - 量化交易盯盘系统。从 macOS 上的富途牛牛 App 获取实�
 src/
 ├── main.rs                  # CLI 入口 (clap)：start / watchlist / debug / test-api / test-ocr
 ├── config.rs                # TOML 配置加载 (serde)
-├── models.rs                # 核心数据模型：StockCode, Market, QuoteSnapshot, Signal, DailyKline, TimedSignal, AlertEvent, UsMarketSession
+├── models.rs                # 核心数据模型：StockCode, Market, QuoteSnapshot, Signal, Sentiment, DailyKline, TimedSignal, AlertEvent, UsMarketSession
 ├── futu/
 │   ├── watchlist.rs         # 读取 plist 自选股（自动扫描用户目录）
 │   ├── accessibility.rs     # macOS AXUIElement 读取 App 窗口 + AX 表格 frame 检测
@@ -44,14 +44,14 @@ src/
 ├── analysis/
 │   ├── daily.rs             # 日K线分析引擎（JSON 缓存 + 增量更新 + MA/MACD/RSI 信号）
 │   ├── indicators.rs        # SMA / EMA / MACD / RSI 纯计算
-│   ├── engine.rs            # 滚动窗口 + 指标调度（Tick 级别）
-│   └── signals.rs           # 金叉/死叉/超买超卖/放量检测
+│   ├── engine.rs            # 事件型 tick 信号检测（VWAP偏离/新高新低/急涨急跌/振幅突破/量能突变）
+│   └── signals.rs           # 金叉/死叉/超买超卖/放量检测（供日线引擎使用）
 ├── alerts/
-│   ├── rules.rs             # 涨跌幅/目标价/信号/放量规则
+│   ├── rules.rs             # 涨跌幅/目标价规则
 │   ├── manager.rs           # 规则评估 + 冷却机制
 │   └── notify.rs            # 终端 + macOS 通知 + Webhook
 ├── ui/
-│   └── dashboard.rs         # ratatui TUI 仪表盘（含日线信号显示）
+│   └── dashboard.rs         # ratatui TUI 仪表盘（含 tick 事件信号 + 日线信号 + 情绪标签显示）
 └── trading/
     └── paper.rs             # 纸上交易（预留）
 ```
@@ -60,9 +60,14 @@ src/
 
 ```
 数据源 → DataProviderKind → QuoteSnapshot
-  → AnalysisEngine (Tick 指标计算)
-  → AlertManager (规则评估 + 通知)
-  → DashboardState (TUI 渲染)
+  → AnalysisEngine (事件型 tick 信号：VWAP偏离/新高新低/急涨急跌/振幅突破/量能突变)
+  → AlertManager (涨跌幅规则评估 + 通知)
+  → DashboardState (TUI 渲染：tick 信号带 5 分钟时间衰减)
+
+Tick 信号设计原则：
+  事件型（触发一次后保持显示），非状态型（避免每 tick 翻转）
+  所有信号标注情绪方向：[利多]/[利空]/[中性]
+  滞后重置机制防止噪声（如 VWAP 偏离回到 reset 阈值才可再次触发）
 
 OCR 管线（OcrProvider）：
   CGWindowList → owner_pid → AX API → GridFrame（归一化坐标）
@@ -71,7 +76,7 @@ OCR 管线（OcrProvider）：
 
 日K线 → OpenAPI proto 3103 → DailyAnalysisEngine (日线指标 + 信号)
   → JSON 缓存 (~/.config/qtrade/kline_cache.json)
-  → DashboardState (日线信号以 [日] 前缀显示)
+  → DashboardState (日线信号以 [日利多]/[日利空]/[日中性] 前缀显示)
 ```
 
 组件间通过 `tokio::sync::mpsc` channel 通信。日K线通过独立 TCP 连接异步获取。
@@ -133,6 +138,14 @@ cooldown_secs = 300
 daily_kline_enabled = true
 daily_kline_days = 120
 daily_kline_refresh_minutes = 30
+# Tick 信号阈值
+vwap_deviation_pct = 2.0        # VWAP 偏离触发阈值 (%)
+vwap_reset_pct = 1.0            # VWAP 偏离重置阈值 (%)
+rapid_move_pct = 1.0            # 急涨急跌阈值 (%)
+rapid_move_window = 5           # 急涨急跌检测窗口 (快照数)
+amplitude_breakout_pct = 5.0    # 振幅突破阈值 (%)
+volume_spike_ratio = 3.0        # 量能突变倍数阈值
+tick_signal_display_minutes = 5 # 信号显示保持时间 (分钟)
 ```
 
 ### 支持市场
