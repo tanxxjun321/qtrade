@@ -465,6 +465,8 @@ pub struct AlertEvent {
     pub triggered_at: DateTime<Local>,
     /// 严重级别
     pub severity: AlertSeverity,
+    /// 情绪方向（用于 UI 着色）
+    pub sentiment: Option<Sentiment>,
 }
 
 /// 提醒级别

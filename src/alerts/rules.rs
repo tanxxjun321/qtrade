@@ -1,17 +1,17 @@
 //! 提醒规则定义
 
-use crate::models::{AlertSeverity, QuoteSnapshot};
+use crate::models::{AlertSeverity, QuoteSnapshot, Sentiment};
 
 /// 提醒规则 trait
 pub trait AlertRule: Send + Sync {
     /// 规则名称
     fn name(&self) -> &str;
 
-    /// 评估规则，返回 (消息, 级别)
+    /// 评估规则，返回 (消息, 级别, 情绪方向)
     fn evaluate(
         &self,
         quote: &QuoteSnapshot,
-    ) -> Option<(String, AlertSeverity)>;
+    ) -> Option<(String, AlertSeverity, Option<Sentiment>)>;
 }
 
 /// 涨跌幅阈值规则
@@ -34,7 +34,7 @@ impl AlertRule for ChangeThresholdRule {
     fn evaluate(
         &self,
         quote: &QuoteSnapshot,
-    ) -> Option<(String, AlertSeverity)> {
+    ) -> Option<(String, AlertSeverity, Option<Sentiment>)> {
         let abs_change = quote.change_pct.abs();
         if abs_change >= self.threshold {
             let direction = if quote.change_pct > 0.0 { "涨" } else { "跌" };
@@ -43,12 +43,18 @@ impl AlertRule for ChangeThresholdRule {
             } else {
                 AlertSeverity::Warning
             };
+            let sentiment = if quote.change_pct > 0.0 {
+                Sentiment::Bullish
+            } else {
+                Sentiment::Bearish
+            };
             Some((
                 format!(
                     "{} {} {:.2}% (现价: {:.2})",
                     quote.name, direction, abs_change, quote.last_price
                 ),
                 severity,
+                Some(sentiment),
             ))
         } else {
             None
@@ -84,7 +90,7 @@ impl AlertRule for TargetPriceRule {
     fn evaluate(
         &self,
         quote: &QuoteSnapshot,
-    ) -> Option<(String, AlertSeverity)> {
+    ) -> Option<(String, AlertSeverity, Option<Sentiment>)> {
         if quote.code.display_code() != self.stock_code {
             return None;
         }
@@ -97,6 +103,7 @@ impl AlertRule for TargetPriceRule {
                         quote.name, upper, quote.last_price
                     ),
                     AlertSeverity::Critical,
+                    Some(Sentiment::Bullish),
                 ));
             }
         }
@@ -109,6 +116,7 @@ impl AlertRule for TargetPriceRule {
                         quote.name, lower, quote.last_price
                     ),
                     AlertSeverity::Critical,
+                    Some(Sentiment::Bearish),
                 ));
             }
         }

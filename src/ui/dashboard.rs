@@ -15,7 +15,7 @@ use ratatui::widgets::*;
 use chrono::{DateTime, Local};
 
 use crate::models::{
-    AlertEvent, AlertSeverity, Market, QuoteSnapshot, Signal, StockCode,
+    AlertEvent, Market, QuoteSnapshot, Sentiment, Signal, StockCode,
     TechnicalIndicators, TimedSignal,
 };
 
@@ -233,10 +233,10 @@ pub fn render(frame: &mut Frame, state: &DashboardState) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(3),  // 标题
-            Constraint::Min(10),   // 主表格
-            Constraint::Length(6), // 提醒
-            Constraint::Length(1), // 状态栏
+            Constraint::Length(3),   // 标题
+            Constraint::Min(10),    // 主表格
+            Constraint::Length(10), // 提醒（8 条 + 2 行边框）
+            Constraint::Length(1),  // 状态栏
         ])
         .split(area);
 
@@ -305,27 +305,37 @@ fn render_quote_table(frame: &mut Frame, area: Rect, state: &DashboardState) {
                 _ => Color::Reset,
             };
 
-            let signal_color = if selected { Color::LightMagenta } else { Color::Magenta };
+            let mut signal_spans: Vec<Span> = Vec::new();
 
-            let mut signal_parts: Vec<String> = Vec::new();
-
-            // Tick 信号（事件型，带情绪标签）
+            // Tick 信号（事件型，按情绪着色）
             if let Some(sigs) = state.tick_signals.get(&q.code) {
                 for (sig, _at) in sigs.iter().rev() {
-                    signal_parts.push(format!("[{}]{}", sig.sentiment(), sig));
+                    if !signal_spans.is_empty() {
+                        signal_spans.push(Span::raw("  "));
+                    }
+                    let color = sentiment_color(sig.sentiment(), selected);
+                    signal_spans.push(Span::styled(
+                        format!("[{}]{}", sig.sentiment(), sig),
+                        Style::new().fg(color),
+                    ));
                 }
             }
 
-            // 日线信号
+            // 日线信号（按情绪着色）
             if state.show_daily_signals {
                 if let Some(sigs) = state.daily_signals.get(&q.code) {
                     for s in sigs {
-                        signal_parts.push(s.to_string());
+                        if !signal_spans.is_empty() {
+                            signal_spans.push(Span::raw("  "));
+                        }
+                        let color = sentiment_color(s.signal.sentiment(), selected);
+                        signal_spans.push(Span::styled(
+                            s.to_string(),
+                            Style::new().fg(color),
+                        ));
                     }
                 }
             }
-
-            let signals = signal_parts.join("  ");
 
             // 仅有 plist 缓存数据（未被 OCR/API 更新过）→ 灰色 "-" 代替虚假的 0%
             let is_stale = q.source == crate::models::DataSource::Cache;
@@ -339,6 +349,8 @@ fn render_quote_table(frame: &mut Frame, area: Rect, state: &DashboardState) {
             let stale_color = Color::DarkGray;
 
             // Cell 只设 fg，不设 bg — bg 由 Row style 统一控制
+            let signal_cell = Cell::from(Line::from(signal_spans));
+
             let cells = if is_stale {
                 vec![
                     Cell::from(q.code.display_code()),
@@ -349,7 +361,7 @@ fn render_quote_table(frame: &mut Frame, area: Rect, state: &DashboardState) {
                     Cell::from("-").style(Style::new().fg(stale_color)),
                     Cell::from("-").style(Style::new().fg(stale_color)),
                     Cell::from("-").style(Style::new().fg(stale_color)),
-                    Cell::from(signals).style(Style::new().fg(signal_color)),
+                    signal_cell,
                 ]
             } else {
                 vec![
@@ -364,7 +376,7 @@ fn render_quote_table(frame: &mut Frame, area: Rect, state: &DashboardState) {
                     Cell::from(format_volume(q.volume)),
                     Cell::from(format!("{:.2}", q.turnover_rate)),
                     Cell::from(format!("{:.2}", q.amplitude)),
-                    Cell::from(signals).style(Style::new().fg(signal_color)),
+                    signal_cell,
                 ]
             };
 
@@ -408,13 +420,14 @@ fn render_alerts(frame: &mut Frame, area: Rect, state: &DashboardState) {
         .recent_alerts
         .iter()
         .rev()
-        .take(5)
+        .take(8)
         .map(|a| {
-            let style = match a.severity {
-                AlertSeverity::Info => Style::default().fg(Color::Blue),
-                AlertSeverity::Warning => Style::default().fg(Color::Yellow),
-                AlertSeverity::Critical => Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+            let color = match a.sentiment {
+                Some(Sentiment::Bullish) => Color::Red,
+                Some(Sentiment::Bearish) => Color::Green,
+                _ => Color::DarkGray,
             };
+            let style = Style::default().fg(color);
             ListItem::new(format!(
                 "[{}] {} {}",
                 a.triggered_at.format("%H:%M:%S"),
@@ -524,6 +537,18 @@ pub fn handle_input(state: &mut DashboardState) -> io::Result<bool> {
         }
     }
     Ok(false)
+}
+
+/// 根据情绪方向返回颜色
+fn sentiment_color(sentiment: Sentiment, selected: bool) -> Color {
+    match (sentiment, selected) {
+        (Sentiment::Bullish, true) => Color::LightRed,
+        (Sentiment::Bullish, false) => Color::Red,
+        (Sentiment::Bearish, true) => Color::LightGreen,
+        (Sentiment::Bearish, false) => Color::Green,
+        (Sentiment::Neutral, true) => Color::Gray,
+        (Sentiment::Neutral, false) => Color::DarkGray,
+    }
 }
 
 /// 格式化成交量

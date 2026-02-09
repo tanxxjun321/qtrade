@@ -59,7 +59,7 @@ impl AlertManager {
         let mut events = Vec::new();
 
         for rule in &self.rules {
-            if let Some((message, severity)) = rule.evaluate(quote) {
+            if let Some((message, severity, sentiment)) = rule.evaluate(quote) {
                 let key = (quote.code.display_code(), rule.name().to_string());
 
                 // 检查冷却
@@ -81,6 +81,7 @@ impl AlertManager {
                     message,
                     triggered_at: chrono::Local::now(),
                     severity,
+                    sentiment,
                 };
 
                 info!("Alert triggered: {} - {}", event.rule_name, event.message);
