@@ -17,7 +17,7 @@ use tracing::{info, warn};
 
 use crate::alerts::manager::AlertManager;
 use crate::alerts::notify::Notifier;
-use crate::alerts::rules::{ChangeThresholdRule, SignalRule, VolumeSpikeRule};
+use crate::alerts::rules::ChangeThresholdRule;
 use crate::analysis::daily::DailyAnalysisEngine;
 use crate::analysis::engine::AnalysisEngine;
 use crate::config::AppConfig;
@@ -217,7 +217,7 @@ async fn cmd_start(config: AppConfig) -> Result<()> {
     };
 
     // 创建分析引擎
-    let engine = Arc::new(Mutex::new(AnalysisEngine::new(200)));
+    let engine = Arc::new(Mutex::new(AnalysisEngine::new(&config.analysis)));
 
     // 创建提醒管理器
     let notifier = Notifier::new(config.alerts.webhook_url.clone());
@@ -226,10 +226,6 @@ async fn cmd_start(config: AppConfig) -> Result<()> {
         alert_manager.add_rule(Box::new(ChangeThresholdRule::new(
             config.alerts.change_threshold_pct,
         )));
-        alert_manager.add_rule(Box::new(SignalRule));
-        alert_manager.add_rule(Box::new(VolumeSpikeRule {
-            ratio_threshold: 2.0,
-        }));
     }
     let alert_manager = Arc::new(Mutex::new(alert_manager));
 
@@ -523,33 +519,50 @@ async fn cmd_start(config: AppConfig) -> Result<()> {
     let engine_clone = engine.clone();
     let alert_clone = alert_manager.clone();
     let dash_clone = dash_state.clone();
+    let tick_display_minutes = config.analysis.tick_signal_display_minutes;
     let analysis_handle = tokio::spawn(async move {
         while let Some(quotes) = quote_rx.recv().await {
-            // 分析
+            // 分析：事件型 tick 信号
             let mut eng = engine_clone.lock().await;
-            let results = eng.process_batch(&quotes);
-
-            // 提醒
-            let mut amgr = alert_clone.lock().await;
+            let now = chrono::Local::now();
+            let mut all_new_signals = std::collections::HashMap::new();
             for quote in &quotes {
-                if let Some((ti, signals)) = results.get(&quote.code) {
-                    let events = amgr.evaluate(quote, ti, signals).await;
-                    if !events.is_empty() {
-                        let mut state = dash_clone.lock().await;
-                        state.recent_alerts.extend(events);
-                    }
+                let new_sigs = eng.process(quote);
+                if !new_sigs.is_empty() {
+                    all_new_signals.insert(quote.code.clone(), new_sigs);
                 }
             }
+            drop(eng);
+
+            // 提醒（仅 ChangeThresholdRule）
+            let mut amgr = alert_clone.lock().await;
+            for quote in &quotes {
+                let events = amgr.evaluate(quote).await;
+                if !events.is_empty() {
+                    let mut state = dash_clone.lock().await;
+                    state.recent_alerts.extend(events);
+                }
+            }
+            drop(amgr);
 
             // 更新仪表盘状态
             let mut state = dash_clone.lock().await;
             state.update_quotes(quotes);
 
-            // 更新指标和信号
-            for (code, (ti, sigs)) in &results {
-                state.indicators.insert(code.clone(), ti.clone());
-                state.signals.insert(code.clone(), sigs.clone());
+            // 写入新触发的 tick 信号
+            for (code, sigs) in all_new_signals {
+                let entry = state.tick_signals.entry(code).or_default();
+                for sig in sigs {
+                    entry.push((sig, now));
+                }
             }
+
+            // 清理过期 tick 信号
+            let cutoff = now - chrono::Duration::minutes(tick_display_minutes as i64);
+            state.tick_signals.retain(|_, sigs| {
+                sigs.retain(|(_, at)| *at > cutoff);
+                !sigs.is_empty()
+            });
         }
     });
 

@@ -189,8 +189,8 @@ prost-build = "0.13"
 
 ### Step 5: 技术指标分析 ✅
 - 实现 `analysis/indicators.rs`：MA（多周期）、MACD、RSI 纯计算函数
-- 实现 `analysis/engine.rs`：维护每只股票的价格滚动窗口（Tick 级别）
-- 实现 `analysis/signals.rs`：金叉/死叉、超买/超卖信号判定
+- 实现 `analysis/engine.rs`：维护每只股票的价格滚动窗口（Tick 级别），仅供 AlertManager 使用（已从 dashboard 移除 Tick 信号显示）
+- 实现 `analysis/signals.rs`：金叉/死叉、超买/超卖信号判定（Tick 信号仅用于 AlertManager 规则评估）
 - 实现 `analysis/daily.rs`：日K线分析引擎（JSON 缓存 + 逐只自适应拉取 + 断点续传）
 - 单元测试（34 个）
 

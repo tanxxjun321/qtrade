@@ -286,6 +286,24 @@ pub struct WatchlistEntry {
     pub sort_index: usize,
 }
 
+/// 信号情绪方向
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Sentiment {
+    Bullish,  // 利多
+    Bearish,  // 利空
+    Neutral,  // 中性
+}
+
+impl fmt::Display for Sentiment {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Sentiment::Bullish => write!(f, "利多"),
+            Sentiment::Bearish => write!(f, "利空"),
+            Sentiment::Neutral => write!(f, "中性"),
+        }
+    }
+}
+
 /// 技术指标值
 #[derive(Debug, Clone, Default)]
 pub struct TechnicalIndicators {
@@ -323,6 +341,40 @@ pub enum Signal {
     RsiOversold { period: usize, value: f64 },
     /// 放量（成交量突增）
     VolumeSpike { ratio: f64 },
+    /// VWAP 偏离（正=高于VWAP利多，负=低于VWAP利空）
+    VwapDeviation { deviation_pct: f64 },
+    /// 日内新高突破
+    IntradayHigh,
+    /// 日内新低突破
+    IntradayLow,
+    /// 急涨急跌（正=急涨，负=急跌）
+    RapidMove { change_pct: f64 },
+    /// 振幅突破
+    AmplitudeBreakout { amplitude_pct: f64 },
+}
+
+impl Signal {
+    /// 返回信号的情绪方向
+    pub fn sentiment(&self) -> Sentiment {
+        match self {
+            Signal::MaGoldenCross { .. } => Sentiment::Bullish,
+            Signal::MaDeathCross { .. } => Sentiment::Bearish,
+            Signal::MacdGoldenCross => Sentiment::Bullish,
+            Signal::MacdDeathCross => Sentiment::Bearish,
+            Signal::RsiOverbought { .. } => Sentiment::Bearish,
+            Signal::RsiOversold { .. } => Sentiment::Bullish,
+            Signal::VolumeSpike { .. } => Sentiment::Neutral,
+            Signal::VwapDeviation { deviation_pct } => {
+                if *deviation_pct > 0.0 { Sentiment::Bullish } else { Sentiment::Bearish }
+            }
+            Signal::IntradayHigh => Sentiment::Bullish,
+            Signal::IntradayLow => Sentiment::Bearish,
+            Signal::RapidMove { change_pct } => {
+                if *change_pct > 0.0 { Sentiment::Bullish } else { Sentiment::Bearish }
+            }
+            Signal::AmplitudeBreakout { .. } => Sentiment::Neutral,
+        }
+    }
 }
 
 impl fmt::Display for Signal {
@@ -345,6 +397,21 @@ impl fmt::Display for Signal {
             Signal::VolumeSpike { ratio } => {
                 write!(f, "放量({:.1}x)", ratio)
             }
+            Signal::VwapDeviation { deviation_pct } => {
+                write!(f, "VWAP偏离{:+.1}%", deviation_pct)
+            }
+            Signal::IntradayHigh => write!(f, "日内新高"),
+            Signal::IntradayLow => write!(f, "日内新低"),
+            Signal::RapidMove { change_pct } => {
+                if *change_pct > 0.0 {
+                    write!(f, "急涨{:+.1}%", change_pct)
+                } else {
+                    write!(f, "急跌{:+.1}%", change_pct)
+                }
+            }
+            Signal::AmplitudeBreakout { amplitude_pct } => {
+                write!(f, "振幅突破{:.1}%", amplitude_pct)
+            }
         }
     }
 }
@@ -352,8 +419,6 @@ impl fmt::Display for Signal {
 /// K线时间周期
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Timeframe {
-    /// Tick 级别（实时）
-    Tick,
     /// 日线级别
     Daily,
 }
@@ -380,8 +445,7 @@ pub struct TimedSignal {
 impl fmt::Display for TimedSignal {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self.timeframe {
-            Timeframe::Tick => write!(f, "{}", self.signal),
-            Timeframe::Daily => write!(f, "[日]{}", self.signal),
+            Timeframe::Daily => write!(f, "[日{}]{}", self.signal.sentiment(), self.signal),
         }
     }
 }

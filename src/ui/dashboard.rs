@@ -12,6 +12,8 @@ use crossterm::ExecutableCommand;
 use ratatui::prelude::*;
 use ratatui::widgets::*;
 
+use chrono::{DateTime, Local};
+
 use crate::models::{
     AlertEvent, AlertSeverity, Market, QuoteSnapshot, Signal, StockCode,
     TechnicalIndicators, TimedSignal,
@@ -23,8 +25,6 @@ pub struct DashboardState {
     pub quotes: Vec<QuoteSnapshot>,
     /// 技术指标
     pub indicators: HashMap<StockCode, TechnicalIndicators>,
-    /// 活跃信号
-    pub signals: HashMap<StockCode, Vec<Signal>>,
     /// 最近提醒
     pub recent_alerts: Vec<AlertEvent>,
     /// 数据源状态
@@ -53,6 +53,8 @@ pub struct DashboardState {
     pub show_daily_signals: bool,
     /// 日K线获取状态（显示在状态栏）
     pub daily_kline_status: String,
+    /// Tick 信号（事件型，带触发时间）
+    pub tick_signals: HashMap<StockCode, Vec<(Signal, DateTime<Local>)>>,
 }
 
 /// 排序列
@@ -70,7 +72,6 @@ impl DashboardState {
         Self {
             quotes: Vec::new(),
             indicators: HashMap::new(),
-            signals: HashMap::new(),
             recent_alerts: Vec::new(),
             source_name: String::new(),
             source_connected: false,
@@ -85,6 +86,7 @@ impl DashboardState {
             daily_signals: HashMap::new(),
             show_daily_signals: true,
             daily_kline_status: String::new(),
+            tick_signals: HashMap::new(),
         }
     }
 
@@ -142,9 +144,9 @@ impl DashboardState {
         // 移除不在新列表中的股票
         self.quotes.retain(|q| new_set.contains(&q.code));
         self.indicators.retain(|k, _| new_set.contains(k));
-        self.signals.retain(|k, _| new_set.contains(k));
         self.daily_indicators.retain(|k, _| new_set.contains(k));
         self.daily_signals.retain(|k, _| new_set.contains(k));
+        self.tick_signals.retain(|k, _| new_set.contains(k));
 
         // 新增的股票追加空 QuoteSnapshot
         let existing: HashSet<StockCode> = self.quotes.iter().map(|q| q.code.clone()).collect();
@@ -307,10 +309,10 @@ fn render_quote_table(frame: &mut Frame, area: Rect, state: &DashboardState) {
 
             let mut signal_parts: Vec<String> = Vec::new();
 
-            // Tick 信号
-            if let Some(sigs) = state.signals.get(&q.code) {
-                for s in sigs {
-                    signal_parts.push(s.to_string());
+            // Tick 信号（事件型，带情绪标签）
+            if let Some(sigs) = state.tick_signals.get(&q.code) {
+                for (sig, _at) in sigs.iter().rev() {
+                    signal_parts.push(format!("[{}]{}", sig.sentiment(), sig));
                 }
             }
 

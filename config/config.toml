@@ -3,7 +3,7 @@ log_level = "info"
 
 [data_source]
 source = "openapi"
-refresh_interval_secs = 2
+refresh_interval_secs = 1
 
 [futu]
 opend_host = "127.0.0.1"
@@ -22,3 +22,10 @@ show_indicators = true
 daily_kline_enabled = true
 daily_kline_days = 120
 daily_kline_refresh_minutes = 30
+# Tick 信号阈值
+vwap_deviation_pct = 2.0
+vwap_reset_pct = 1.0
+rapid_move_pct = 1.0
+rapid_move_window = 5
+amplitude_breakout_pct = 5.0
+tick_signal_display_minutes = 5

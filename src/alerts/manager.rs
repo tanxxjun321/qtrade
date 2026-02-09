@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use std::time::{Duration, Instant};
 use tracing::{debug, info};
 
-use crate::models::{AlertEvent, QuoteSnapshot, Signal, TechnicalIndicators};
+use crate::models::{AlertEvent, QuoteSnapshot};
 
 use super::notify::Notifier;
 use super::rules::AlertRule;
@@ -51,8 +51,6 @@ impl AlertManager {
     pub async fn evaluate(
         &mut self,
         quote: &QuoteSnapshot,
-        indicators: &TechnicalIndicators,
-        signals: &[Signal],
     ) -> Vec<AlertEvent> {
         if !self.enabled {
             return Vec::new();
@@ -61,7 +59,7 @@ impl AlertManager {
         let mut events = Vec::new();
 
         for rule in &self.rules {
-            if let Some((message, severity)) = rule.evaluate(quote, indicators, signals) {
+            if let Some((message, severity)) = rule.evaluate(quote) {
                 let key = (quote.code.display_code(), rule.name().to_string());
 
                 // 检查冷却

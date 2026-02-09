@@ -155,6 +155,30 @@ pub struct AnalysisConfig {
     /// 日K线刷新间隔（分钟），0 表示仅启动时获取
     #[serde(default = "default_daily_kline_refresh_minutes")]
     pub daily_kline_refresh_minutes: u64,
+
+    /// VWAP 偏离触发阈值 (%)
+    #[serde(default = "default_vwap_deviation_pct")]
+    pub vwap_deviation_pct: f64,
+
+    /// VWAP 偏离重置阈值 (%)
+    #[serde(default = "default_vwap_reset_pct")]
+    pub vwap_reset_pct: f64,
+
+    /// 急涨急跌阈值 (%)
+    #[serde(default = "default_rapid_move_pct")]
+    pub rapid_move_pct: f64,
+
+    /// 急涨急跌检测窗口 (快照数, ×2s)
+    #[serde(default = "default_rapid_move_window")]
+    pub rapid_move_window: u32,
+
+    /// 振幅突破阈值 (%)
+    #[serde(default = "default_amplitude_breakout_pct")]
+    pub amplitude_breakout_pct: f64,
+
+    /// 信号显示保持时间 (分钟)
+    #[serde(default = "default_tick_signal_display_minutes")]
+    pub tick_signal_display_minutes: u64,
 }
 
 impl Default for AnalysisConfig {
@@ -163,6 +187,12 @@ impl Default for AnalysisConfig {
             daily_kline_enabled: true,
             daily_kline_days: default_daily_kline_days(),
             daily_kline_refresh_minutes: default_daily_kline_refresh_minutes(),
+            vwap_deviation_pct: default_vwap_deviation_pct(),
+            vwap_reset_pct: default_vwap_reset_pct(),
+            rapid_move_pct: default_rapid_move_pct(),
+            rapid_move_window: default_rapid_move_window(),
+            amplitude_breakout_pct: default_amplitude_breakout_pct(),
+            tick_signal_display_minutes: default_tick_signal_display_minutes(),
         }
     }
 }
@@ -173,6 +203,30 @@ fn default_daily_kline_days() -> u32 {
 
 fn default_daily_kline_refresh_minutes() -> u64 {
     30
+}
+
+fn default_vwap_deviation_pct() -> f64 {
+    2.0
+}
+
+fn default_vwap_reset_pct() -> f64 {
+    1.0
+}
+
+fn default_rapid_move_pct() -> f64 {
+    1.0
+}
+
+fn default_rapid_move_window() -> u32 {
+    5
+}
+
+fn default_amplitude_breakout_pct() -> f64 {
+    5.0
+}
+
+fn default_tick_signal_display_minutes() -> u64 {
+    5
 }
 
 fn default_log_level() -> String {
