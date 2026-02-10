@@ -48,8 +48,8 @@ src/
 │   ├── engine.rs            # 事件型 tick 信号检测（VWAP偏离/急涨急跌/振幅突破/量能突变）
 │   └── signals.rs           # 金叉/死叉/超买超卖/放量/MS-MACD拐点检测（供日线引擎使用）
 ├── alerts/
-│   ├── rules.rs             # 涨跌幅/目标价规则
-│   ├── manager.rs           # 规则评估 + 冷却机制
+│   ├── rules.rs             # 涨跌幅(多级阈值)/目标价规则
+│   ├── manager.rs           # 穿越检测 + 日内去重 + 通知
 │   └── notify.rs            # 终端 + macOS 通知 + Webhook
 ├── ui/
 │   └── dashboard.rs         # ratatui TUI 仪表盘（含 tick 事件信号 + 日线信号 + 情绪标签显示）
@@ -62,7 +62,7 @@ src/
 ```
 数据源 → DataProviderKind → QuoteSnapshot
   → AnalysisEngine (事件型 tick 信号：VWAP偏离/急涨急跌/振幅突破/量能突变)
-  → AlertManager (涨跌幅规则评估 + 通知)
+  → AlertManager (多级涨跌幅规则 + 穿越检测 + 日内去重 + 通知)
   → DashboardState (TUI 渲染：tick 信号带 5 分钟时间衰减)
 
 Tick 信号设计原则：
@@ -132,7 +132,8 @@ opend_host = "127.0.0.1"
 opend_port = 11111
 
 [alerts]
-change_threshold_pct = 3.0
+change_threshold_pct = 3.0              # 向后兼容单阈值
+change_thresholds = [3.0, 5.0, 7.0, 10.0]  # 多级阈值，每级各报一次
 cooldown_secs = 300
 
 [analysis]
