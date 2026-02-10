@@ -343,10 +343,6 @@ pub enum Signal {
     VolumeSpike { ratio: f64 },
     /// VWAP 偏离（正=高于VWAP利多，负=低于VWAP利空）
     VwapDeviation { deviation_pct: f64 },
-    /// 日内新高突破
-    IntradayHigh,
-    /// 日内新低突破
-    IntradayLow,
     /// 急涨急跌（正=急涨，负=急跌）
     RapidMove { change_pct: f64 },
     /// 振幅突破
@@ -371,8 +367,6 @@ impl Signal {
             Signal::VwapDeviation { deviation_pct } => {
                 if *deviation_pct > 0.0 { Sentiment::Bullish } else { Sentiment::Bearish }
             }
-            Signal::IntradayHigh => Sentiment::Bullish,
-            Signal::IntradayLow => Sentiment::Bearish,
             Signal::RapidMove { change_pct } => {
                 if *change_pct > 0.0 { Sentiment::Bullish } else { Sentiment::Bearish }
             }
@@ -406,8 +400,6 @@ impl fmt::Display for Signal {
             Signal::VwapDeviation { deviation_pct } => {
                 write!(f, "VWAP偏离{:+.1}%", deviation_pct)
             }
-            Signal::IntradayHigh => write!(f, "日内新高"),
-            Signal::IntradayLow => write!(f, "日内新低"),
             Signal::RapidMove { change_pct } => {
                 if *change_pct > 0.0 {
                     write!(f, "急涨{:+.1}%", change_pct)

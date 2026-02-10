@@ -45,7 +45,7 @@ src/
 ├── analysis/
 │   ├── daily.rs             # 日K线分析引擎（JSON 缓存 + 增量更新 + MA/MACD/RSI/MS-MACD 信号）
 │   ├── indicators.rs        # SMA / EMA / MACD / RSI 纯计算
-│   ├── engine.rs            # 事件型 tick 信号检测（VWAP偏离/新高新低/急涨急跌/振幅突破/量能突变）
+│   ├── engine.rs            # 事件型 tick 信号检测（VWAP偏离/急涨急跌/振幅突破/量能突变）
 │   └── signals.rs           # 金叉/死叉/超买超卖/放量/MS-MACD拐点检测（供日线引擎使用）
 ├── alerts/
 │   ├── rules.rs             # 涨跌幅/目标价规则
@@ -61,7 +61,7 @@ src/
 
 ```
 数据源 → DataProviderKind → QuoteSnapshot
-  → AnalysisEngine (事件型 tick 信号：VWAP偏离/新高新低/急涨急跌/振幅突破/量能突变)
+  → AnalysisEngine (事件型 tick 信号：VWAP偏离/急涨急跌/振幅突破/量能突变)
   → AlertManager (涨跌幅规则评估 + 通知)
   → DashboardState (TUI 渲染：tick 信号带 5 分钟时间衰减)
 

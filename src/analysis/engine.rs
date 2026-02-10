@@ -1,8 +1,7 @@
 //! 分析引擎：事件型 tick 信号检测
 //!
-//! 检测 5 类事件信号（触发一次后保持显示，不频繁翻转）：
+//! 检测 4 类事件信号（触发一次后保持显示，不频繁翻转）：
 //! - VWAP 偏离：价格偏离成交均价超阈值
-//! - 日内新高/新低突破：突破已知极值
 //! - 急涨急跌：短窗口内价格剧烈变动
 //! - 振幅突破：日内振幅超阈值
 //! - 量能突变：增量成交量相对窗口均值突增
@@ -49,10 +48,6 @@ impl PriceWindow {
 struct TickState {
     /// 已接收的 tick 数（预热计数）
     tick_count: u32,
-    /// 上次已知日内最高
-    last_known_high: f64,
-    /// 上次已知日内最低
-    last_known_low: f64,
     /// VWAP 偏离利多已触发（回到 reset 阈值内才重新检测）
     vwap_above_triggered: bool,
     /// VWAP 偏离利空已触发
@@ -153,25 +148,7 @@ impl AnalysisEngine {
             }
         }
 
-        // 2. 日内新高/新低突破
-        if quote.high_price > 0.0 && quote.low_price > 0.0 {
-            if ts.last_known_high == 0.0 {
-                // 首次：初始化，不触发
-                ts.last_known_high = quote.high_price;
-                ts.last_known_low = quote.low_price;
-            } else {
-                if quote.high_price > ts.last_known_high {
-                    signals.push(Signal::IntradayHigh);
-                    ts.last_known_high = quote.high_price;
-                }
-                if quote.low_price < ts.last_known_low {
-                    signals.push(Signal::IntradayLow);
-                    ts.last_known_low = quote.low_price;
-                }
-            }
-        }
-
-        // 3. 急涨急跌（停滞检查 + 方向效率 + 滞后重置）
+        // 2. 急涨急跌（停滞检查 + 方向效率 + 滞后重置）
         let prices = &window.prices;
         if prices.len() > self.rapid_move_window {
             // 第一层：价格停滞检查 — 当前价与上一快照一致则跳过
@@ -226,13 +203,13 @@ impl AnalysisEngine {
             }
         }
 
-        // 4. 振幅突破
+        // 3. 振幅突破
         if quote.amplitude >= self.amplitude_breakout_pct && !ts.amplitude_triggered {
             signals.push(Signal::AmplitudeBreakout { amplitude_pct: quote.amplitude });
             ts.amplitude_triggered = true;
         }
 
-        // 5. 量能突变：增量成交量 vs 窗口均值
+        // 4. 量能突变：增量成交量 vs 窗口均值
         let deltas = &window.vol_deltas;
         if deltas.len() >= 3 {
             let latest = *deltas.last().unwrap() as f64;
@@ -307,22 +284,6 @@ mod tests {
             timestamp: chrono::Local::now(),
             source: DataSource::Cache,
         }
-    }
-
-    #[test]
-    fn test_engine_intraday_high() {
-        let mut engine = AnalysisEngine::new(&default_config());
-
-        // 首次：初始化，不触发
-        let q1 = make_quote("00700", 100.0);
-        let sigs = engine.process(&q1);
-        assert!(sigs.iter().all(|s| !matches!(s, Signal::IntradayHigh)));
-
-        // 新高突破
-        let mut q2 = make_quote("00700", 102.0);
-        q2.high_price = 103.0;
-        let sigs = engine.process(&q2);
-        assert!(sigs.iter().any(|s| matches!(s, Signal::IntradayHigh)));
     }
 
     #[test]
