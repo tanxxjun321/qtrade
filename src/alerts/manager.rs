@@ -1,9 +1,11 @@
-//! 提醒管理器：穿越检测 + 通知
+//! 提醒管理器：穿越检测 + 日内去重 + 通知
 //!
 //! 只在 change_pct 从 < 阈值 穿越到 >= 阈值时触发，
-//! 不会因冷启动或持续超阈值而反复报警。
+//! 同股票 + 同规则 + 同方向一天只报一次，不会反复报警。
 
 use std::collections::HashMap;
+
+use chrono::NaiveDate;
 use tracing::{debug, info};
 
 use crate::models::{AlertEvent, QuoteSnapshot, StockCode};
@@ -17,6 +19,8 @@ pub struct AlertManager {
     rules: Vec<Box<dyn AlertRule>>,
     /// 每只股票上一次的 change_pct（用于穿越检测）
     prev_change_pct: HashMap<StockCode, f64>,
+    /// 日内去重：(股票, "规则名_方向") → 已触发日期
+    fired_today: HashMap<(StockCode, String), NaiveDate>,
     /// 通知器
     notifier: Notifier,
     /// 提醒历史
@@ -30,6 +34,7 @@ impl AlertManager {
         Self {
             rules: Vec::new(),
             prev_change_pct: HashMap::new(),
+            fired_today: HashMap::new(),
             notifier,
             history: Vec::new(),
             enabled: true,
@@ -80,6 +85,21 @@ impl AlertManager {
                     continue;
                 }
 
+                // 日内去重：同股票 + 同规则 + 同方向，一天只报一次
+                let today = chrono::Local::now().date_naive();
+                let direction = match &sentiment {
+                    Some(s) => format!("{}", s),
+                    None => "none".to_string(),
+                };
+                let fire_key = (quote.code.clone(), format!("{}_{}", rule.name(), direction));
+                if self.fired_today.get(&fire_key) == Some(&today) {
+                    debug!(
+                        "日内已报过 {} / {}，跳过",
+                        quote.code, fire_key.1
+                    );
+                    continue;
+                }
+
                 // 穿越确认：上次未命中 → 本次命中 → 触发
                 let event = AlertEvent {
                     code: quote.code.clone(),
@@ -96,7 +116,8 @@ impl AlertManager {
                 // 发送通知
                 self.notifier.send(&event).await;
 
-                // 记录历史
+                // 记录历史 + 标记日内已触发
+                self.fired_today.insert(fire_key, today);
                 self.history.push(event.clone());
                 events.push(event);
             }

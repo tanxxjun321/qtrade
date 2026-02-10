@@ -225,9 +225,9 @@ async fn cmd_start(config: AppConfig) -> Result<()> {
     let notifier = Notifier::new(config.alerts.webhook_url.clone());
     let mut alert_manager = AlertManager::new(notifier);
     if config.alerts.enabled {
-        alert_manager.add_rule(Box::new(ChangeThresholdRule::new(
-            config.alerts.change_threshold_pct,
-        )));
+        for threshold in config.alerts.effective_thresholds() {
+            alert_manager.add_rule(Box::new(ChangeThresholdRule::new(threshold)));
+        }
     }
     let alert_manager = Arc::new(Mutex::new(alert_manager));
 

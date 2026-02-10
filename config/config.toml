@@ -2,7 +2,7 @@
 log_level = "info"
 
 [data_source]
-source = "ocr"
+source = "openapi"
 refresh_interval_secs = 1
 
 [futu]
@@ -13,6 +13,7 @@ opend_port = 11111
 enabled = true
 cooldown_secs = 300
 change_threshold_pct = 3.0
+change_thresholds = [3.0, 5.0, 7.0, 10.0]
 
 [ui]
 page_size = 50

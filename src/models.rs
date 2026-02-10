@@ -287,7 +287,7 @@ pub struct WatchlistEntry {
 }
 
 /// 信号情绪方向
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Sentiment {
     Bullish,  // 利多
     Bearish,  // 利空

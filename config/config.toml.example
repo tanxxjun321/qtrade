@@ -25,8 +25,10 @@ opend_port = 11111
 enabled = true
 # 冷却时间（秒），同一规则在此时间内不重复触发
 cooldown_secs = 300
-# 涨跌幅提醒阈值 (%)
+# 涨跌幅提醒阈值 (%)（当 change_thresholds 未设置时使用）
 change_threshold_pct = 3.0
+# 多级涨跌幅阈值 (%)，每级各报一次
+change_thresholds = [3.0, 5.0, 7.0, 10.0]
 # Webhook URL（支持飞书/Slack）
 # webhook_url = "https://open.feishu.cn/open-apis/bot/v2/hook/xxx"
 

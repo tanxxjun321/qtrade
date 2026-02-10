@@ -5,7 +5,7 @@ use crate::models::{AlertSeverity, QuoteSnapshot, Sentiment};
 /// 提醒规则 trait
 pub trait AlertRule: Send + Sync {
     /// 规则名称
-    fn name(&self) -> &str;
+    fn name(&self) -> String;
 
     /// 评估规则，返回 (消息, 级别, 情绪方向)
     fn evaluate(
@@ -27,8 +27,8 @@ impl ChangeThresholdRule {
 }
 
 impl AlertRule for ChangeThresholdRule {
-    fn name(&self) -> &str {
-        "涨跌幅提醒"
+    fn name(&self) -> String {
+        format!("涨跌幅{}%", self.threshold)
     }
 
     fn evaluate(
@@ -83,8 +83,8 @@ impl TargetPriceRule {
 }
 
 impl AlertRule for TargetPriceRule {
-    fn name(&self) -> &str {
-        "目标价提醒"
+    fn name(&self) -> String {
+        "目标价提醒".to_string()
     }
 
     fn evaluate(

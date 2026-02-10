@@ -103,9 +103,12 @@ pub struct AlertsConfig {
     #[serde(default = "default_cooldown")]
     pub cooldown_secs: u64,
 
-    /// 涨跌幅提醒阈值 (%)
+    /// 涨跌幅提醒阈值 (%)（向后兼容，当 change_thresholds 未设置时使用）
     #[serde(default = "default_change_threshold")]
     pub change_threshold_pct: f64,
+
+    /// 多级涨跌幅阈值 (%)，如 [3.0, 5.0, 7.0, 10.0]
+    pub change_thresholds: Option<Vec<f64>>,
 
     /// Webhook URL（可选）
     pub webhook_url: Option<String>,
@@ -117,8 +120,18 @@ impl Default for AlertsConfig {
             enabled: true,
             cooldown_secs: default_cooldown(),
             change_threshold_pct: default_change_threshold(),
+            change_thresholds: None,
             webhook_url: None,
         }
+    }
+}
+
+impl AlertsConfig {
+    /// 获取有效阈值列表：优先使用 change_thresholds，否则用 change_threshold_pct
+    pub fn effective_thresholds(&self) -> Vec<f64> {
+        self.change_thresholds
+            .clone()
+            .unwrap_or_else(|| vec![self.change_threshold_pct])
     }
 }
 
