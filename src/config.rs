@@ -213,6 +213,10 @@ pub struct AnalysisConfig {
     #[serde(default = "default_volume_min_baseline_secs")]
     pub volume_min_baseline_secs: f64,
 
+    /// 量能突变最低增量成交额（万元），delta × price >= 此值才触发
+    #[serde(default = "default_volume_spike_turnover")]
+    pub volume_spike_turnover: f64,
+
     /// 信号显示保持时间 (分钟)
     #[serde(default = "default_tick_signal_display_minutes")]
     pub tick_signal_display_minutes: u64,
@@ -239,6 +243,7 @@ impl Default for AnalysisConfig {
             volume_spike_ratio: default_volume_spike_ratio(),
             volume_baseline_secs: default_volume_baseline_secs(),
             volume_min_baseline_secs: default_volume_min_baseline_secs(),
+            volume_spike_turnover: default_volume_spike_turnover(),
             tick_signal_display_minutes: default_tick_signal_display_minutes(),
             warmup_ticks: default_warmup_ticks(),
         }
@@ -286,7 +291,7 @@ fn default_amplitude_breakout_pct() -> f64 {
 }
 
 fn default_volume_spike_ratio() -> f64 {
-    2000.0
+    1000.0
 }
 
 fn default_volume_baseline_secs() -> f64 {
@@ -294,7 +299,11 @@ fn default_volume_baseline_secs() -> f64 {
 }
 
 fn default_volume_min_baseline_secs() -> f64 {
-    120.0
+    30.0
+}
+
+fn default_volume_spike_turnover() -> f64 {
+    1000.0
 }
 
 fn default_tick_signal_display_minutes() -> u64 {

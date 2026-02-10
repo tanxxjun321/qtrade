@@ -133,9 +133,6 @@ struct TickState {
     volume_spike_triggered: bool,
 }
 
-/// ADV 绝对量门槛除数：单 tick delta >= ADV / ADV_DIVISOR 才算放量
-const ADV_DIVISOR: f64 = 1000.0;
-
 /// 分析引擎
 pub struct AnalysisEngine {
     /// 每只股票的价格窗口
@@ -144,7 +141,7 @@ pub struct AnalysisEngine {
     vol_trackers: HashMap<StockCode, VolumeTracker>,
     /// 每只股票的事件状态
     tick_states: HashMap<StockCode, TickState>,
-    /// 每只股票的日均成交量（ADV），由外部 daily engine 注入
+    /// 每只股票的日均成交量（ADV），由外部 daily engine 注入（预留）
     adv_map: HashMap<StockCode, f64>,
     /// 配置阈值
     vwap_deviation_pct: f64,
@@ -158,6 +155,8 @@ pub struct AnalysisEngine {
     volume_spike_ratio: f64,
     volume_baseline_secs: f64,
     volume_min_baseline_secs: f64,
+    /// 量能突变最低增量成交额（万元）
+    volume_spike_turnover: f64,
     warmup_ticks: u32,
 }
 
@@ -179,6 +178,7 @@ impl AnalysisEngine {
             volume_spike_ratio: config.volume_spike_ratio,
             volume_baseline_secs: config.volume_baseline_secs,
             volume_min_baseline_secs: config.volume_min_baseline_secs,
+            volume_spike_turnover: config.volume_spike_turnover,
             warmup_ticks: config.warmup_ticks,
         }
     }
@@ -302,16 +302,13 @@ impl AnalysisEngine {
             ts.amplitude_triggered = true;
         }
 
-        // 4. 量能突变：时间归一化量速率 + ADV 绝对量门槛（指数跳过）
+        // 4. 量能突变：时间归一化量速率 + 增量成交额门槛（指数跳过）
         if !quote.code.is_index() {
         if let Some((ratio, delta)) = vol_tracker.compute_ratio() {
-            // 绝对量门槛：有 ADV 时要求 delta >= ADV / ADV_DIVISOR，无 ADV 时仅看倍数
-            let adv_ok = match self.adv_map.get(&quote.code) {
-                Some(&adv) if adv > 0.0 => delta as f64 >= adv / ADV_DIVISOR,
-                _ => true,
-            };
+            // 增量成交额门槛：delta × price >= volume_spike_turnover 万元
+            let turnover_ok = delta as f64 * quote.last_price >= self.volume_spike_turnover * 10000.0;
 
-            if ratio >= self.volume_spike_ratio && adv_ok && !ts.volume_spike_triggered {
+            if ratio >= self.volume_spike_ratio && turnover_ok && !ts.volume_spike_triggered {
                 signals.push(Signal::VolumeSpike { ratio, price: quote.last_price, delta });
                 ts.volume_spike_triggered = true;
             }
@@ -355,6 +352,7 @@ mod tests {
             volume_spike_ratio: 3.0,
             volume_baseline_secs: 300.0,
             volume_min_baseline_secs: 0.0, // 测试中关闭最短基线要求
+            volume_spike_turnover: 0.0, // 测试中关闭成交额门槛
             tick_signal_display_minutes: 5,
             warmup_ticks: 0, // 测试中默认关闭预热
         }
@@ -666,19 +664,14 @@ mod tests {
     }
 
     #[test]
-    fn test_volume_spike_adv_threshold() {
-        // 有 ADV 时，绝对量不足应被过滤
+    fn test_volume_spike_turnover_threshold() {
+        // 增量成交额不足应被过滤：delta=50股 × 100元 = 5000元 < 1000万
         let config = AnalysisConfig {
             volume_spike_ratio: 3.0,
+            volume_spike_turnover: 1000.0, // 1000 万
             ..default_config()
         };
         let mut engine = AnalysisEngine::new(&config);
-
-        // 设置 ADV = 10,000,000 股 → 阈值 = 10,000,000 / 1000 = 10,000 股
-        let code = StockCode::new(Market::HK, "00700");
-        let mut adv = HashMap::new();
-        adv.insert(code.clone(), 10_000_000.0);
-        engine.update_adv(adv);
 
         let base_time = chrono::Local::now();
         // 极低量基线：每 3 秒 10 股（冷门时段）
@@ -690,13 +683,13 @@ mod tests {
             engine.process(&q);
         }
 
-        // "放量" 50 股 → ratio 很高但绝对量 50 远低于 ADV 门槛 10,000
+        // "放量" 50 股 × 100 元 = 5000 元 → ratio 很高但成交额远低于 1000 万
         let mut q = make_quote("00700", 100.0);
         q.volume = 90; // delta=50 in 3s
         q.timestamp = base_time + chrono::Duration::seconds(15);
         let sigs = engine.process(&q);
         assert!(sigs.iter().all(|s| !matches!(s, Signal::VolumeSpike { .. })),
-            "delta below ADV threshold should not trigger");
+            "turnover below threshold should not trigger");
     }
 
     #[test]
