@@ -958,6 +958,20 @@ fn parse_basic_qot_list(s2c: Option<&pb_basic_qot::S2C>) -> Vec<QuoteSnapshot> {
         .collect()
 }
 
+/// 从 JSON 值中提取整数（兼容数字和字符串格式）
+/// FutuOpenD 对大数值（如 volume）可能返回字符串而非数字
+fn json_as_i64(v: &serde_json::Value) -> Option<i64> {
+    v.as_i64()
+        .or_else(|| v.as_f64().map(|f| f as i64))
+        .or_else(|| v.as_str().and_then(|s| s.parse().ok()))
+}
+
+/// 从 JSON 值中提取浮点数（兼容数字和字符串格式）
+fn json_as_f64(v: &serde_json::Value) -> Option<f64> {
+    v.as_f64()
+        .or_else(|| v.as_str().and_then(|s| s.parse().ok()))
+}
+
 /// 从 JSON 响应解析 BasicQot 列表
 fn parse_basic_qot_json(resp: &serde_json::Value) -> Vec<QuoteSnapshot> {
     let Some(list) = resp.pointer("/s2c/basicQotList").and_then(|v| v.as_array()) else {
@@ -971,8 +985,8 @@ fn parse_basic_qot_json(resp: &serde_json::Value) -> Vec<QuoteSnapshot> {
             let code = security.get("code").and_then(|v| v.as_str()).unwrap_or("");
             let stock_code = futu_market_to_stock_code(market, code);
 
-            let cur_price = qot.get("curPrice").and_then(|v| v.as_f64()).unwrap_or(0.0);
-            let last_close = qot.get("lastClosePrice").and_then(|v| v.as_f64()).unwrap_or(0.0);
+            let cur_price = qot.get("curPrice").and_then(json_as_f64).unwrap_or(0.0);
+            let last_close = qot.get("lastClosePrice").and_then(json_as_f64).unwrap_or(0.0);
             let change = cur_price - last_close;
             let change_pct = if last_close > 0.0 {
                 change / last_close * 100.0
@@ -985,15 +999,15 @@ fn parse_basic_qot_json(resp: &serde_json::Value) -> Vec<QuoteSnapshot> {
                 name: qot.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string(),
                 last_price: cur_price,
                 prev_close: last_close,
-                open_price: qot.get("openPrice").and_then(|v| v.as_f64()).unwrap_or(0.0),
-                high_price: qot.get("highPrice").and_then(|v| v.as_f64()).unwrap_or(0.0),
-                low_price: qot.get("lowPrice").and_then(|v| v.as_f64()).unwrap_or(0.0),
-                volume: qot.get("volume").and_then(|v| v.as_i64()).unwrap_or(0) as u64,
-                turnover: qot.get("turnover").and_then(|v| v.as_f64()).unwrap_or(0.0),
+                open_price: qot.get("openPrice").and_then(json_as_f64).unwrap_or(0.0),
+                high_price: qot.get("highPrice").and_then(json_as_f64).unwrap_or(0.0),
+                low_price: qot.get("lowPrice").and_then(json_as_f64).unwrap_or(0.0),
+                volume: qot.get("volume").and_then(json_as_i64).unwrap_or(0) as u64,
+                turnover: qot.get("turnover").and_then(json_as_f64).unwrap_or(0.0),
                 change,
                 change_pct,
-                turnover_rate: qot.get("turnoverRate").and_then(|v| v.as_f64()).unwrap_or(0.0),
-                amplitude: qot.get("amplitude").and_then(|v| v.as_f64()).unwrap_or(0.0),
+                turnover_rate: qot.get("turnoverRate").and_then(json_as_f64).unwrap_or(0.0),
+                amplitude: qot.get("amplitude").and_then(json_as_f64).unwrap_or(0.0),
                 extended_price: None,
                 extended_change_pct: None,
                 timestamp: chrono::Local::now(),

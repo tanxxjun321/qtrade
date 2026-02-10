@@ -281,6 +281,23 @@ impl DailyAnalysisEngine {
         &self.signals
     }
 
+    /// 计算每只股票的日均成交量（ADV, 近 20 个交易日均值）
+    pub fn compute_adv(&self) -> HashMap<StockCode, f64> {
+        let adv_days = 20;
+        let mut result = HashMap::new();
+        for (code, klines) in &self.klines {
+            if klines.is_empty() {
+                continue;
+            }
+            let n = klines.len().min(adv_days);
+            let recent = &klines[klines.len() - n..];
+            let total_vol: u64 = recent.iter().map(|k| k.volume).sum();
+            let adv = total_vol as f64 / n as f64;
+            result.insert(code.clone(), adv);
+        }
+        result
+    }
+
     /// 计算技术指标（复用 indicators 模块的纯函数）
     fn compute_indicators(prices: &[f64]) -> TechnicalIndicators {
         TechnicalIndicators {

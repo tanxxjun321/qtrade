@@ -217,6 +217,8 @@ fn detect_volume_spike(volumes: &[u64], signals: &mut Vec<Signal>) {
     if avg > 0.0 && last / avg >= VOLUME_SPIKE_RATIO {
         signals.push(Signal::VolumeSpike {
             ratio: last / avg,
+            price: 0.0,
+            delta: 0,
         });
     }
 }

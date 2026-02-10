@@ -32,6 +32,6 @@ rapid_move_reset_pct = 0.5      # 重置阈值 (%)
 rapid_move_efficiency = 0.6     # 方向效率 (0-1)
 rapid_move_min_change = 0.05    # 最低绝对变动 (元)
 amplitude_breakout_pct = 5.0
-volume_spike_ratio = 3.0
+volume_spike_ratio = 2000.0
 tick_signal_display_minutes = 5
 warmup_ticks = 3                # 启动预热 tick 数

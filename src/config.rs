@@ -201,9 +201,17 @@ pub struct AnalysisConfig {
     #[serde(default = "default_amplitude_breakout_pct")]
     pub amplitude_breakout_pct: f64,
 
-    /// 量能突变倍数阈值（增量成交量 / 窗口均值）
+    /// 量能突变倍数阈值（当前 tick 量速率 / 基线量速率）
     #[serde(default = "default_volume_spike_ratio")]
     pub volume_spike_ratio: f64,
+
+    /// 量能基线窗口（秒），用于计算基线量速率
+    #[serde(default = "default_volume_baseline_secs")]
+    pub volume_baseline_secs: f64,
+
+    /// 量能检测最短基线（秒），基线不足此时长不触发
+    #[serde(default = "default_volume_min_baseline_secs")]
+    pub volume_min_baseline_secs: f64,
 
     /// 信号显示保持时间 (分钟)
     #[serde(default = "default_tick_signal_display_minutes")]
@@ -229,6 +237,8 @@ impl Default for AnalysisConfig {
             rapid_move_min_change: default_rapid_move_min_change(),
             amplitude_breakout_pct: default_amplitude_breakout_pct(),
             volume_spike_ratio: default_volume_spike_ratio(),
+            volume_baseline_secs: default_volume_baseline_secs(),
+            volume_min_baseline_secs: default_volume_min_baseline_secs(),
             tick_signal_display_minutes: default_tick_signal_display_minutes(),
             warmup_ticks: default_warmup_ticks(),
         }
@@ -276,7 +286,15 @@ fn default_amplitude_breakout_pct() -> f64 {
 }
 
 fn default_volume_spike_ratio() -> f64 {
-    3.0
+    2000.0
+}
+
+fn default_volume_baseline_secs() -> f64 {
+    300.0
+}
+
+fn default_volume_min_baseline_secs() -> f64 {
+    120.0
 }
 
 fn default_tick_signal_display_minutes() -> u64 {

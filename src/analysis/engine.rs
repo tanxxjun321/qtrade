@@ -10,12 +10,10 @@ use std::collections::HashMap;
 use crate::config::AnalysisConfig;
 use crate::models::{QuoteSnapshot, Signal, StockCode};
 
-/// 每只股票的价格/量能历史窗口
+/// 每只股票的价格历史窗口
 #[derive(Debug)]
 struct PriceWindow {
     prices: Vec<f64>,
-    /// 增量成交量序列（相邻快照的 cumulative volume 之差）
-    vol_deltas: Vec<u64>,
     max_size: usize,
 }
 
@@ -23,7 +21,6 @@ impl PriceWindow {
     fn new(max_size: usize) -> Self {
         Self {
             prices: Vec::with_capacity(max_size),
-            vol_deltas: Vec::with_capacity(max_size),
             max_size,
         }
     }
@@ -34,12 +31,86 @@ impl PriceWindow {
             self.prices.remove(0);
         }
     }
+}
 
-    fn push_vol_delta(&mut self, delta: u64) {
-        self.vol_deltas.push(delta);
-        if self.vol_deltas.len() > self.max_size {
-            self.vol_deltas.remove(0);
+/// 每只股票的成交量跟踪器（时间戳 + 累计成交量 ring buffer）
+///
+/// 用时间归一化的量速率（股/秒）做基线，消除 tick 间隔抖动：
+///   baseline_rate = 基线窗口总量 / 基线窗口秒数
+///   expected      = baseline_rate × 当前 tick 间隔
+///   ratio         = actual_delta / expected
+#[derive(Debug)]
+struct VolumeTracker {
+    /// (时间戳秒, 累计成交量)
+    samples: std::collections::VecDeque<(f64, u64)>,
+    /// 基线窗口长度（秒）
+    max_window_secs: f64,
+    /// 基线不足此秒数不触发
+    min_baseline_secs: f64,
+}
+
+impl VolumeTracker {
+    fn new(max_window_secs: f64, min_baseline_secs: f64) -> Self {
+        Self {
+            samples: std::collections::VecDeque::new(),
+            max_window_secs,
+            min_baseline_secs,
         }
+    }
+
+    /// 记录一个采样点
+    fn push(&mut self, timestamp: f64, cumulative_volume: u64) {
+        self.samples.push_back((timestamp, cumulative_volume));
+        // 淘汰超出窗口的旧样本（保留至少 2 个）
+        while self.samples.len() > 2 {
+            let oldest_time = self.samples[0].0;
+            if timestamp - oldest_time > self.max_window_secs {
+                self.samples.pop_front();
+            } else {
+                break;
+            }
+        }
+    }
+
+    /// 计算当前 tick 的量能倍数
+    ///
+    /// 返回 `Some((ratio, delta))` 或 `None`（基线不足）
+    fn compute_ratio(&self) -> Option<(f64, u64)> {
+        let n = self.samples.len();
+        if n < 3 {
+            return None;
+        }
+
+        let (cur_time, cur_vol) = self.samples[n - 1];
+        let (prev_time, prev_vol) = self.samples[n - 2];
+        let (oldest_time, oldest_vol) = self.samples[0];
+
+        // 当前 tick 的增量和间隔
+        let elapsed = cur_time - prev_time;
+        if elapsed <= 0.0 {
+            return None;
+        }
+        let delta = cur_vol.saturating_sub(prev_vol);
+
+        // 基线：从最早到倒数第二个样本（不含当前 tick）
+        let baseline_time = prev_time - oldest_time;
+        if baseline_time < self.min_baseline_secs {
+            return None;
+        }
+        let baseline_vol = prev_vol.saturating_sub(oldest_vol);
+        let baseline_rate = baseline_vol as f64 / baseline_time;
+        if baseline_rate <= 0.0 {
+            return None;
+        }
+
+        // 当前 tick "应该"有多少量
+        let expected = baseline_rate * elapsed;
+        if expected <= 0.0 {
+            return None;
+        }
+
+        let ratio = delta as f64 / expected;
+        Some((ratio, delta))
     }
 }
 
@@ -58,18 +129,23 @@ struct TickState {
     rapid_move_up_triggered: bool,
     /// 急涨急跌下跌方向已触发（滞后重置）
     rapid_move_down_triggered: bool,
-    /// 上一次累计成交量（用于计算增量）
-    prev_cumulative_volume: u64,
     /// 量能突变已触发（滞后重置）
     volume_spike_triggered: bool,
 }
+
+/// ADV 绝对量门槛除数：单 tick delta >= ADV / ADV_DIVISOR 才算放量
+const ADV_DIVISOR: f64 = 1000.0;
 
 /// 分析引擎
 pub struct AnalysisEngine {
     /// 每只股票的价格窗口
     windows: HashMap<StockCode, PriceWindow>,
+    /// 每只股票的成交量跟踪器
+    vol_trackers: HashMap<StockCode, VolumeTracker>,
     /// 每只股票的事件状态
     tick_states: HashMap<StockCode, TickState>,
+    /// 每只股票的日均成交量（ADV），由外部 daily engine 注入
+    adv_map: HashMap<StockCode, f64>,
     /// 配置阈值
     vwap_deviation_pct: f64,
     vwap_reset_pct: f64,
@@ -80,6 +156,8 @@ pub struct AnalysisEngine {
     rapid_move_min_change: f64,
     amplitude_breakout_pct: f64,
     volume_spike_ratio: f64,
+    volume_baseline_secs: f64,
+    volume_min_baseline_secs: f64,
     warmup_ticks: u32,
 }
 
@@ -87,7 +165,9 @@ impl AnalysisEngine {
     pub fn new(config: &AnalysisConfig) -> Self {
         Self {
             windows: HashMap::new(),
+            vol_trackers: HashMap::new(),
             tick_states: HashMap::new(),
+            adv_map: HashMap::new(),
             vwap_deviation_pct: config.vwap_deviation_pct,
             vwap_reset_pct: config.vwap_reset_pct,
             rapid_move_pct: config.rapid_move_pct,
@@ -97,8 +177,15 @@ impl AnalysisEngine {
             rapid_move_min_change: config.rapid_move_min_change,
             amplitude_breakout_pct: config.amplitude_breakout_pct,
             volume_spike_ratio: config.volume_spike_ratio,
+            volume_baseline_secs: config.volume_baseline_secs,
+            volume_min_baseline_secs: config.volume_min_baseline_secs,
             warmup_ticks: config.warmup_ticks,
         }
+    }
+
+    /// 更新日均成交量（ADV）数据，由 daily engine 注入
+    pub fn update_adv(&mut self, adv: HashMap<StockCode, f64>) {
+        self.adv_map = adv;
     }
 
     /// 处理新的行情快照，返回新触发的事件型信号
@@ -113,14 +200,18 @@ impl AnalysisEngine {
             .or_insert_with(|| PriceWindow::new(window_size));
         window.push_price(quote.last_price);
 
-        let ts = self.tick_states.entry(quote.code.clone()).or_default();
+        // 更新成交量跟踪器（时间戳 + 累计量）
+        let baseline_secs = self.volume_baseline_secs;
+        let min_baseline_secs = self.volume_min_baseline_secs;
+        let vol_tracker = self
+            .vol_trackers
+            .entry(quote.code.clone())
+            .or_insert_with(|| VolumeTracker::new(baseline_secs, min_baseline_secs));
+        let ts_secs = quote.timestamp.timestamp() as f64
+            + quote.timestamp.timestamp_subsec_millis() as f64 / 1000.0;
+        vol_tracker.push(ts_secs, quote.volume);
 
-        // 计算增量成交量
-        if ts.prev_cumulative_volume > 0 && quote.volume >= ts.prev_cumulative_volume {
-            let delta = quote.volume - ts.prev_cumulative_volume;
-            window.push_vol_delta(delta);
-        }
-        ts.prev_cumulative_volume = quote.volume;
+        let ts = self.tick_states.entry(quote.code.clone()).or_default();
 
         // 预热：前 N 个 tick 仅记录数据，不产生信号
         ts.tick_count += 1;
@@ -128,8 +219,10 @@ impl AnalysisEngine {
             return signals;
         }
 
-        // 1. VWAP 偏离
-        if quote.volume > 0 && quote.turnover > 0.0 && quote.last_price > 0.0 {
+        // 1. VWAP 偏离（指数的 turnover/volume 与指数点位不可比，跳过）
+        if !quote.code.is_index()
+            && quote.volume > 0 && quote.turnover > 0.0 && quote.last_price > 0.0
+        {
             let vwap = quote.turnover / quote.volume as f64;
             let deviation = (quote.last_price - vwap) / vwap * 100.0;
 
@@ -209,24 +302,24 @@ impl AnalysisEngine {
             ts.amplitude_triggered = true;
         }
 
-        // 4. 量能突变：增量成交量 vs 窗口均值
-        let deltas = &window.vol_deltas;
-        if deltas.len() >= 3 {
-            let latest = *deltas.last().unwrap() as f64;
-            // 均值不含最新一条，避免自身拉高均值
-            let avg: f64 = deltas[..deltas.len() - 1].iter().map(|d| *d as f64).sum::<f64>()
-                / (deltas.len() - 1) as f64;
-            if avg > 0.0 {
-                let ratio = latest / avg;
-                if ratio >= self.volume_spike_ratio && !ts.volume_spike_triggered {
-                    signals.push(Signal::VolumeSpike { ratio });
-                    ts.volume_spike_triggered = true;
-                }
-                // 滞后重置：回落到 1.5 倍以下
-                if ratio < 1.5 {
-                    ts.volume_spike_triggered = false;
-                }
+        // 4. 量能突变：时间归一化量速率 + ADV 绝对量门槛（指数跳过）
+        if !quote.code.is_index() {
+        if let Some((ratio, delta)) = vol_tracker.compute_ratio() {
+            // 绝对量门槛：有 ADV 时要求 delta >= ADV / ADV_DIVISOR，无 ADV 时仅看倍数
+            let adv_ok = match self.adv_map.get(&quote.code) {
+                Some(&adv) if adv > 0.0 => delta as f64 >= adv / ADV_DIVISOR,
+                _ => true,
+            };
+
+            if ratio >= self.volume_spike_ratio && adv_ok && !ts.volume_spike_triggered {
+                signals.push(Signal::VolumeSpike { ratio, price: quote.last_price, delta });
+                ts.volume_spike_triggered = true;
             }
+            // 滞后重置：回落到 1.5 倍以下
+            if ratio < 1.5 {
+                ts.volume_spike_triggered = false;
+            }
+        }
         }
 
         signals
@@ -235,6 +328,7 @@ impl AnalysisEngine {
     /// 移除股票的 tick 级分析数据
     pub fn remove_stock(&mut self, code: &StockCode) {
         self.windows.remove(code);
+        self.vol_trackers.remove(code);
         self.tick_states.remove(code);
     }
 }
@@ -259,6 +353,8 @@ mod tests {
             rapid_move_min_change: 0.05,
             amplitude_breakout_pct: 5.0,
             volume_spike_ratio: 3.0,
+            volume_baseline_secs: 300.0,
+            volume_min_baseline_secs: 0.0, // 测试中关闭最短基线要求
             tick_signal_display_minutes: 5,
             warmup_ticks: 0, // 测试中默认关闭预热
         }
@@ -330,24 +426,30 @@ mod tests {
         };
         let mut engine = AnalysisEngine::new(&config);
 
-        // 累计成交量递增：1000, 2000, 3000, 4000 → 增量均为 1000
-        for cum_vol in [1000u64, 2000, 3000, 4000] {
+        // 构造带时间戳的报价：每 3 秒一个 tick，累计量均匀递增
+        let base_time = chrono::Local::now();
+        let make_timed = |secs: i64, cum_vol: u64| {
             let mut q = make_quote("00700", 100.0);
             q.volume = cum_vol;
-            engine.process(&q);
-        }
+            q.timestamp = base_time + chrono::Duration::seconds(secs);
+            q
+        };
 
-        // 突然放量：增量 5000（5x 均值）→ 触发
-        let mut q = make_quote("00700", 100.0);
-        q.volume = 9000; // delta = 9000 - 4000 = 5000
-        let sigs = engine.process(&q);
-        assert!(sigs.iter().any(|s| matches!(s, Signal::VolumeSpike { ratio } if *ratio >= 3.0)));
+        // 基线：每 3 秒增加 1000 股（约 333 股/秒）
+        engine.process(&make_timed(0, 1000));
+        engine.process(&make_timed(3, 2000));
+        engine.process(&make_timed(6, 3000));
+        engine.process(&make_timed(9, 4000));
+
+        // 突然放量：3 秒内增加 5000 股（约 1667 股/秒，5x 基线）→ 触发
+        let sigs = engine.process(&make_timed(12, 9000));
+        assert!(sigs.iter().any(|s| matches!(s, Signal::VolumeSpike { ratio, .. } if *ratio >= 3.0)),
+            "should trigger volume spike on 5x burst");
 
         // 已触发，不重复
-        let mut q2 = make_quote("00700", 100.0);
-        q2.volume = 14000; // delta = 5000, 仍高但已触发
-        let sigs = engine.process(&q2);
-        assert!(sigs.iter().all(|s| !matches!(s, Signal::VolumeSpike { .. })));
+        let sigs = engine.process(&make_timed(15, 14000));
+        assert!(sigs.iter().all(|s| !matches!(s, Signal::VolumeSpike { .. })),
+            "should not repeat while triggered");
     }
 
     #[test]
@@ -530,5 +632,137 @@ mod tests {
         q4.amplitude = 10.0;
         let sigs = engine.process(&q4); // tick 4
         assert!(!sigs.is_empty(), "post-warmup should produce signals");
+    }
+
+    #[test]
+    fn test_volume_spike_time_normalized() {
+        // tick 间隔抖动不应导致误触发：5 秒 tick 的 delta 自然比 2 秒大，
+        // 但归一化到量速率后倍数仍为 ~1x
+        let config = AnalysisConfig {
+            volume_spike_ratio: 3.0,
+            ..default_config()
+        };
+        let mut engine = AnalysisEngine::new(&config);
+
+        let base_time = chrono::Local::now();
+        let rate = 1000.0; // 1000 股/秒
+
+        // 基线：均匀 3 秒间隔
+        for i in 0..5 {
+            let secs = i * 3;
+            let mut q = make_quote("00700", 100.0);
+            q.volume = (rate * secs as f64) as u64;
+            q.timestamp = base_time + chrono::Duration::seconds(secs);
+            engine.process(&q);
+        }
+
+        // 正常量但 5 秒间隔（delta 比 3 秒 tick 大 1.67x，但归一化后 ~1x）
+        let mut q = make_quote("00700", 100.0);
+        q.volume = (rate * 17.0) as u64; // 12s→17s, delta=5000 in 5s = 1000/s
+        q.timestamp = base_time + chrono::Duration::seconds(17);
+        let sigs = engine.process(&q);
+        assert!(sigs.iter().all(|s| !matches!(s, Signal::VolumeSpike { .. })),
+            "time-normalized rate ~1x should not trigger spike");
+    }
+
+    #[test]
+    fn test_volume_spike_adv_threshold() {
+        // 有 ADV 时，绝对量不足应被过滤
+        let config = AnalysisConfig {
+            volume_spike_ratio: 3.0,
+            ..default_config()
+        };
+        let mut engine = AnalysisEngine::new(&config);
+
+        // 设置 ADV = 10,000,000 股 → 阈值 = 10,000,000 / 1000 = 10,000 股
+        let code = StockCode::new(Market::HK, "00700");
+        let mut adv = HashMap::new();
+        adv.insert(code.clone(), 10_000_000.0);
+        engine.update_adv(adv);
+
+        let base_time = chrono::Local::now();
+        // 极低量基线：每 3 秒 10 股（冷门时段）
+        for i in 0..5 {
+            let secs = i * 3;
+            let mut q = make_quote("00700", 100.0);
+            q.volume = (10 * i) as u64;
+            q.timestamp = base_time + chrono::Duration::seconds(secs);
+            engine.process(&q);
+        }
+
+        // "放量" 50 股 → ratio 很高但绝对量 50 远低于 ADV 门槛 10,000
+        let mut q = make_quote("00700", 100.0);
+        q.volume = 90; // delta=50 in 3s
+        q.timestamp = base_time + chrono::Duration::seconds(15);
+        let sigs = engine.process(&q);
+        assert!(sigs.iter().all(|s| !matches!(s, Signal::VolumeSpike { .. })),
+            "delta below ADV threshold should not trigger");
+    }
+
+    #[test]
+    fn test_volume_spike_hysteresis_reset() {
+        // 放量触发 → 回落 → 再次放量可重新触发
+        let config = AnalysisConfig {
+            volume_spike_ratio: 3.0,
+            ..default_config()
+        };
+        let mut engine = AnalysisEngine::new(&config);
+
+        let base_time = chrono::Local::now();
+        let rate = 1000.0;
+
+        // 基线
+        for i in 0..5 {
+            let secs = i * 3;
+            let mut q = make_quote("00700", 100.0);
+            q.volume = (rate * secs as f64) as u64;
+            q.timestamp = base_time + chrono::Duration::seconds(secs);
+            engine.process(&q);
+        }
+
+        // 放量 5x → 触发
+        let mut q = make_quote("00700", 100.0);
+        q.volume = (rate * 12.0 + rate * 3.0 * 5.0) as u64;
+        q.timestamp = base_time + chrono::Duration::seconds(15);
+        let sigs = engine.process(&q);
+        assert!(sigs.iter().any(|s| matches!(s, Signal::VolumeSpike { .. })),
+            "5x spike should trigger");
+
+        // 回落到正常量（ratio < 1.5 → reset）
+        let prev_vol = q.volume;
+        let mut q2 = make_quote("00700", 100.0);
+        q2.volume = prev_vol + (rate * 3.0) as u64; // 正常量
+        q2.timestamp = base_time + chrono::Duration::seconds(18);
+        engine.process(&q2);
+
+        // 再次放量 → 可重新触发
+        let mut q3 = make_quote("00700", 100.0);
+        q3.volume = q2.volume + (rate * 3.0 * 5.0) as u64;
+        q3.timestamp = base_time + chrono::Duration::seconds(21);
+        let sigs = engine.process(&q3);
+        assert!(sigs.iter().any(|s| matches!(s, Signal::VolumeSpike { .. })),
+            "should re-trigger after hysteresis reset");
+    }
+
+    #[test]
+    fn test_vwap_skipped_for_index() {
+        // 指数股票不应产生 VWAP 偏离信号
+        let config = default_config();
+        let mut engine = AnalysisEngine::new(&config);
+
+        // SZ.399006 创业板指：turnover/volume 得到的是成分股均价，与指数点位不可比
+        let mut q = make_quote("399006", 3328.0);
+        q.code = StockCode::new(Market::SZ, "399006");
+        q.turnover = 195_100_000_000.0;
+        q.volume = 100_000_000;
+        // warmup (config warmup_ticks=0, 但需要数据点)
+        for _ in 0..3 {
+            engine.process(&q);
+        }
+        let sigs = engine.process(&q);
+        assert!(
+            sigs.iter().all(|s| !matches!(s, Signal::VwapDeviation { .. })),
+            "index stock should not produce VWAP signal"
+        );
     }
 }

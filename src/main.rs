@@ -254,7 +254,7 @@ async fn cmd_start(config: AppConfig) -> Result<()> {
             .collect();
         state.update_quotes(initial_quotes);
 
-        // 如果有缓存，立即填充日线数据
+        // 如果有缓存，立即填充日线数据 + 注入 ADV
         {
             let de = daily_engine.lock().await;
             if de.stock_count() > 0 {
@@ -264,6 +264,11 @@ async fn cmd_start(config: AppConfig) -> Result<()> {
                     state.daily_signals.values().map(|v| v.len()).sum();
                 state.daily_kline_status =
                     format!("日K:{}只 信号:{} (缓存)", de.stock_count(), sig_count);
+
+                // 从缓存计算 ADV 并注入 tick 引擎
+                let adv = de.compute_adv();
+                let mut eng = engine.lock().await;
+                eng.update_adv(adv);
             }
         }
     }
@@ -439,6 +444,7 @@ async fn cmd_start(config: AppConfig) -> Result<()> {
     // 日K线异步获取任务（使用 watch channel 感知新增股票）
     let daily_refresh_handle = if config.analysis.daily_kline_enabled {
         let daily_engine_clone = daily_engine.clone();
+        let tick_engine_for_daily = engine.clone();
         let dash_for_daily = dash_state.clone();
         let futu_host = config.futu.opend_host.clone();
         let futu_port = config.futu.opend_port;
@@ -457,6 +463,7 @@ async fn cmd_start(config: AppConfig) -> Result<()> {
                 futu_port,
                 &current_codes,
                 &daily_engine_clone,
+                &tick_engine_for_daily,
                 &dash_for_daily,
                 daily_days,
             )
@@ -480,6 +487,7 @@ async fn cmd_start(config: AppConfig) -> Result<()> {
                             futu_port,
                             &current_codes,
                             &daily_engine_clone,
+                            &tick_engine_for_daily,
                             &dash_for_daily,
                             daily_days,
                         )
@@ -504,6 +512,7 @@ async fn cmd_start(config: AppConfig) -> Result<()> {
                                 futu_port,
                                 &added,
                                 &daily_engine_clone,
+                                &tick_engine_for_daily,
                                 &dash_for_daily,
                                 daily_days,
                             )
@@ -549,12 +558,38 @@ async fn cmd_start(config: AppConfig) -> Result<()> {
 
             // 更新仪表盘状态
             let mut state = dash_clone.lock().await;
+            // 放量信号 → 写入 recent_alerts（需在 update_quotes 消费 quotes 前建名称映射）
+            let name_map: std::collections::HashMap<StockCode, String> = quotes
+                .iter()
+                .map(|q| (q.code.clone(), q.name.clone()))
+                .collect();
             state.update_quotes(quotes);
+            for (code, sigs) in &all_new_signals {
+                for sig in sigs {
+                    if let crate::models::Signal::VolumeSpike { ratio, price, delta } = sig {
+                        let name = name_map.get(code).map(|s| s.as_str()).unwrap_or("");
+                        state.recent_alerts.push(crate::models::AlertEvent {
+                            code: code.clone(),
+                            name: name.to_string(),
+                            rule_name: "放量".to_string(),
+                            message: format!(
+                                "{} 放量{:.0}x 价:{:.2} 量:{:.1}万",
+                                name, ratio, price, *delta as f64 / 10000.0
+                            ),
+                            triggered_at: now,
+                            severity: crate::models::AlertSeverity::Warning,
+                            sentiment: None,
+                        });
+                    }
+                }
+            }
 
-            // 写入新触发的 tick 信号
+            // 写入新触发的 tick 信号（同类型信号只保留最新，如新的放量替换旧的放量）
             for (code, sigs) in all_new_signals {
                 let entry = state.tick_signals.entry(code).or_default();
                 for sig in sigs {
+                    let disc = std::mem::discriminant(&sig);
+                    entry.retain(|(existing, _)| std::mem::discriminant(existing) != disc);
                     entry.push((sig, now));
                 }
             }
@@ -1018,12 +1053,13 @@ async fn fetch_and_merge_stock_kline(
     Ok(true)
 }
 
-/// 执行一轮日K线拉取：连接 FutuOpenD、探测权限、逐只拉取、保存缓存、更新 dashboard
+/// 执行一轮日K线拉取：连接 FutuOpenD、探测权限、逐只拉取、保存缓存、更新 dashboard、注入 ADV
 async fn run_daily_kline_cycle(
     futu_host: &str,
     futu_port: u16,
     daily_codes: &[StockCode],
     daily_engine: &Arc<Mutex<DailyAnalysisEngine>>,
+    tick_engine: &Arc<Mutex<AnalysisEngine>>,
     dash_state: &Arc<Mutex<DashboardState>>,
     daily_days: u32,
 ) {
@@ -1094,7 +1130,7 @@ async fn run_daily_kline_cycle(
                 }
             }
 
-            // 最终状态
+            // 最终状态 + 注入 ADV 到 tick 分析引擎
             {
                 let de = daily_engine.lock().await;
                 let mut state = dash_state.lock().await;
@@ -1103,11 +1139,23 @@ async fn run_daily_kline_cycle(
                 let sig_count: usize = state.daily_signals.values().map(|v| v.len()).sum();
                 state.daily_kline_status =
                     format!("日K:{}只 信号:{}", de.stock_count(), sig_count);
+
+                // 计算 ADV 并注入 tick 引擎（放量绝对量门槛）
+                let adv = de.compute_adv();
+                let adv_count = adv.len();
+                drop(state);
+                drop(de);
+                {
+                    let mut eng = tick_engine.lock().await;
+                    eng.update_adv(adv);
+                }
+
                 info!(
-                    "Daily K-line complete: fetched {}, total {}, {} signals",
+                    "Daily K-line complete: fetched {}, total {}, {} signals, ADV for {} stocks",
                     fetched,
-                    de.stock_count(),
-                    sig_count
+                    daily_engine.lock().await.stock_count(),
+                    sig_count,
+                    adv_count,
                 );
             }
 

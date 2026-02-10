@@ -73,6 +73,17 @@ impl StockCode {
     pub fn display_code(&self) -> String {
         format!("{}.{}", self.market, self.code)
     }
+
+    /// 是否为指数代码（指数的 VWAP/换手率等指标无意义）
+    pub fn is_index(&self) -> bool {
+        match self.market {
+            Market::SH => self.code.starts_with("000"),  // 上证指数系列
+            Market::SZ => self.code.starts_with("399"),  // 深证指数系列
+            Market::HK => self.code.starts_with("800"),  // 港股指数
+            Market::US => self.code.starts_with('.'),     // 美股指数
+            _ => false,
+        }
+    }
 }
 
 impl fmt::Display for StockCode {
@@ -340,7 +351,7 @@ pub enum Signal {
     /// RSI 超卖
     RsiOversold { period: usize, value: f64 },
     /// 放量（成交量突增）
-    VolumeSpike { ratio: f64 },
+    VolumeSpike { ratio: f64, price: f64, delta: u64 },
     /// VWAP 偏离（正=高于VWAP利多，负=低于VWAP利空）
     VwapDeviation { deviation_pct: f64 },
     /// 急涨急跌（正=急涨，负=急跌）
@@ -394,8 +405,8 @@ impl fmt::Display for Signal {
             Signal::RsiOversold { period, value } => {
                 write!(f, "RSI{} 超卖({:.1})", period, value)
             }
-            Signal::VolumeSpike { ratio } => {
-                write!(f, "放量({:.1}x)", ratio)
+            Signal::VolumeSpike { ratio, .. } => {
+                write!(f, "放量({:.0}x)", ratio)
             }
             Signal::VwapDeviation { deviation_pct } => {
                 write!(f, "VWAP偏离{:+.1}%", deviation_pct)
@@ -475,4 +486,20 @@ pub enum AlertSeverity {
     Info,
     Warning,
     Critical,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_is_index() {
+        assert!(StockCode::new(Market::SH, "000001").is_index()); // 上证指数
+        assert!(StockCode::new(Market::SZ, "399006").is_index()); // 创业板指
+        assert!(StockCode::new(Market::HK, "800000").is_index()); // 恒生指数
+        assert!(StockCode::new(Market::US, ".DJI").is_index());   // 道琼斯
+        assert!(!StockCode::new(Market::SZ, "000001").is_index()); // 平安银行
+        assert!(!StockCode::new(Market::HK, "00700").is_index());  // 腾讯
+        assert!(!StockCode::new(Market::US, "AAPL").is_index());   // 苹果
+    }
 }
