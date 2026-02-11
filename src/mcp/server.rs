@@ -1,7 +1,7 @@
-//! MCP Server — 港股交易 MCP 工具
+//! MCP Server — 交易 MCP 工具（港股 + A股）
 //!
-//! 通过 Streamable HTTP 暴露 hk_buy / hk_sell / get_quote 工具，
-//! 供大模型（如 Claude）调用。
+//! 通过 Streamable HTTP 暴露 buy / sell / get_quote 工具，
+//! 供大模型（如 Claude）调用。自动根据股票代码推断市场。
 
 use std::sync::Arc;
 use tokio::sync::Mutex;
@@ -19,17 +19,17 @@ use rmcp::{
 };
 
 use crate::config::McpConfig;
-use crate::trading::executor::{OrderRequest, OrderSide, TradingExecutor};
+use crate::trading::executor::{OrderRequest, OrderSide, TradingExecutor, TradingMarket};
 
 // ===== Tool 参数定义 =====
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
-pub struct HkBuyParams {
-    /// 港股代码，如 "00700"
-    #[schemars(description = "港股股票代码，如 00700")]
+pub struct BuyParams {
+    /// 股票代码：港股5位数字（如 "00700"），A股6位数字（如 "600519"、"000001"）
+    #[schemars(description = "股票代码。港股5位（如 00700），A股6位（如 600519、000001、300750）")]
     pub stock_code: String,
-    /// 委托价格 (HKD)
-    #[schemars(description = "委托价格，单位 HKD")]
+    /// 委托价格（港股 HKD，A股 CNY）
+    #[schemars(description = "委托价格（港股单位 HKD，A股单位 CNY）")]
     pub price: f64,
     /// 委托数量（股）
     #[schemars(description = "委托数量（股数）")]
@@ -37,12 +37,12 @@ pub struct HkBuyParams {
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
-pub struct HkSellParams {
-    /// 港股代码，如 "00700"
-    #[schemars(description = "港股股票代码，如 00700")]
+pub struct SellParams {
+    /// 股票代码：港股5位数字（如 "00700"），A股6位数字（如 "600519"、"000001"）
+    #[schemars(description = "股票代码。港股5位（如 00700），A股6位（如 600519、000001、300750）")]
     pub stock_code: String,
-    /// 委托价格 (HKD)
-    #[schemars(description = "委托价格，单位 HKD")]
+    /// 委托价格（港股 HKD，A股 CNY）
+    #[schemars(description = "委托价格（港股单位 HKD，A股单位 CNY）")]
     pub price: f64,
     /// 委托数量（股）
     #[schemars(description = "委托数量（股数）")]
@@ -75,16 +75,27 @@ impl QtradeMcpServer {
         }
     }
 
-    #[tool(description = "港股买入委托。通过财富通客户端提交港股限价买入订单。提交前会验证确认弹窗中的价格和代码。")]
-    async fn hk_buy(
+    #[tool(description = "买入委托。支持港股（5位代码如00700）和A股（6位代码如600519）。自动识别市场，通过财富通客户端提交限价买入订单。提交前会验证确认弹窗中的价格和代码。")]
+    async fn buy(
         &self,
-        Parameters(params): Parameters<HkBuyParams>,
+        Parameters(params): Parameters<BuyParams>,
     ) -> Result<CallToolResult, McpError> {
+        let market = TradingMarket::infer(&params.stock_code).ok_or_else(|| {
+            McpError::invalid_params(
+                format!(
+                    "无法识别股票代码 '{}' 的市场。港股为5位数字（如 00700），A股为6位数字（如 600519）",
+                    params.stock_code
+                ),
+                None,
+            )
+        })?;
+
         let req = OrderRequest {
             stock_code: params.stock_code,
             price: params.price,
             quantity: params.quantity,
             side: OrderSide::Buy,
+            market,
         };
 
         let executor = self.executor.lock().await;
@@ -104,16 +115,27 @@ impl QtradeMcpServer {
         }
     }
 
-    #[tool(description = "港股卖出委托。通过财富通客户端提交港股限价卖出订单。提交前会验证确认弹窗中的价格和代码。")]
-    async fn hk_sell(
+    #[tool(description = "卖出委托。支持港股（5位代码如00700）和A股（6位代码如600519）。自动识别市场，通过财富通客户端提交限价卖出订单。提交前会验证确认弹窗中的价格和代码。")]
+    async fn sell(
         &self,
-        Parameters(params): Parameters<HkSellParams>,
+        Parameters(params): Parameters<SellParams>,
     ) -> Result<CallToolResult, McpError> {
+        let market = TradingMarket::infer(&params.stock_code).ok_or_else(|| {
+            McpError::invalid_params(
+                format!(
+                    "无法识别股票代码 '{}' 的市场。港股为5位数字（如 00700），A股为6位数字（如 600519）",
+                    params.stock_code
+                ),
+                None,
+            )
+        })?;
+
         let req = OrderRequest {
             stock_code: params.stock_code,
             price: params.price,
             quantity: params.quantity,
             side: OrderSide::Sell,
+            market,
         };
 
         let executor = self.executor.lock().await;
@@ -172,8 +194,9 @@ impl ServerHandler for QtradeMcpServer {
                 website_url: None,
             },
             instructions: Some(
-                "qtrade MCP 交易服务器 — 港股自动交易。\n\
-                 提供 hk_buy（港股买入）、hk_sell（港股卖出）、get_quote（获取行情）三个工具。\n\
+                "qtrade MCP 交易服务器 — 港股 + A股自动交易。\n\
+                 提供 buy（买入）、sell（卖出）、get_quote（获取行情）三个工具。\n\
+                 股票代码自动识别市场：港股5位（如 00700），A股6位（如 600519）。\n\
                  交易通过 macOS Accessibility API 驱动财富通V5.0客户端完成，需要辅助功能权限。"
                     .to_string(),
             ),

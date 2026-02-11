@@ -932,7 +932,7 @@ async fn cmd_test_ocr(_config: AppConfig) -> Result<()> {
 
 /// 启动 MCP 交易服务器
 async fn cmd_test_trade(code: String, price: f64, qty: u32, side: String) -> Result<()> {
-    use crate::trading::executor::{OrderRequest, OrderSide, TradingExecutor};
+    use crate::trading::executor::{OrderRequest, OrderSide, TradingExecutor, TradingMarket};
 
     let side = match side.to_lowercase().as_str() {
         "buy" => OrderSide::Buy,
@@ -940,8 +940,12 @@ async fn cmd_test_trade(code: String, price: f64, qty: u32, side: String) -> Res
         other => anyhow::bail!("无效的 side: {:?}，请使用 buy 或 sell", other),
     };
 
+    let market = TradingMarket::infer(&code)
+        .ok_or_else(|| anyhow::anyhow!("无法识别股票代码 '{}' 的市场", code))?;
+
+    let prec = market.price_decimals();
     println!("=== 交易测试 ===");
-    println!("股票: {}  价格: {:.3}  数量: {}  方向: {}", code, price, qty, side);
+    println!("市场: {}  股票: {}  价格: {:.prec$}  数量: {}  方向: {}", market, code, price, qty, side, prec = prec);
     println!();
 
     let executor = TradingExecutor::new()?;
@@ -952,6 +956,7 @@ async fn cmd_test_trade(code: String, price: f64, qty: u32, side: String) -> Res
         price,
         quantity: qty,
         side,
+        market,
     };
 
     let result = executor.execute_order(&req).await?;

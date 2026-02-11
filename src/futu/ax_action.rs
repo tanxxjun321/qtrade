@@ -152,6 +152,12 @@ pub fn focus_element(element: CFTypeRef) -> Result<()> {
     set_bool_attr(element, "AXFocused", true)
 }
 
+/// 读取布尔属性（如 AXHidden、AXMinimized）
+pub fn get_bool_attr(element: CFTypeRef, attribute: &str) -> Option<bool> {
+    let value = get_attr(element, attribute).ok()?;
+    Some(value == CFBoolean::true_value().as_CFTypeRef())
+}
+
 /// 设置布尔属性
 pub fn set_bool_attr(element: CFTypeRef, attribute: &str, value: bool) -> Result<()> {
     let attr_name = CFString::new(attribute);
