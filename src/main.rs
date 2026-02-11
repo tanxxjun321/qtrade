@@ -51,6 +51,21 @@ enum Commands {
     TestOcr,
     /// 启动 MCP 交易服务器
     McpServer,
+    /// 测试港股交易流程（绕过 MCP，直接调用执行器）
+    TestTrade {
+        /// 股票代码，如 00700
+        #[arg(long)]
+        code: String,
+        /// 委托价格 (HKD)
+        #[arg(long)]
+        price: f64,
+        /// 委托数量（股）
+        #[arg(long)]
+        qty: u32,
+        /// 交易方向：buy 或 sell
+        #[arg(long)]
+        side: String,
+    },
 }
 
 #[tokio::main]
@@ -93,6 +108,9 @@ async fn main() -> Result<()> {
         Commands::TestApi => cmd_test_api(config).await,
         Commands::TestOcr => cmd_test_ocr(config).await,
         Commands::McpServer => cmd_mcp_server(config).await,
+        Commands::TestTrade { code, price, qty, side } => {
+            cmd_test_trade(code, price, qty, side).await
+        }
     }
 }
 
@@ -913,6 +931,36 @@ async fn cmd_test_ocr(_config: AppConfig) -> Result<()> {
 }
 
 /// 启动 MCP 交易服务器
+async fn cmd_test_trade(code: String, price: f64, qty: u32, side: String) -> Result<()> {
+    use crate::trading::executor::{OrderRequest, OrderSide, TradingExecutor};
+
+    let side = match side.to_lowercase().as_str() {
+        "buy" => OrderSide::Buy,
+        "sell" => OrderSide::Sell,
+        other => anyhow::bail!("无效的 side: {:?}，请使用 buy 或 sell", other),
+    };
+
+    println!("=== 交易测试 ===");
+    println!("股票: {}  价格: {:.3}  数量: {}  方向: {}", code, price, qty, side);
+    println!();
+
+    let executor = TradingExecutor::new()?;
+    println!("交易执行器就绪，PID={}", executor.pid());
+
+    let req = OrderRequest {
+        stock_code: code,
+        price,
+        quantity: qty,
+        side,
+    };
+
+    let result = executor.execute_order(&req).await?;
+    println!();
+    println!("=== 结果 ===");
+    println!("{}", serde_json::to_string_pretty(&result)?);
+    Ok(())
+}
+
 async fn cmd_mcp_server(config: AppConfig) -> Result<()> {
     crate::mcp::server::run_mcp_server(&config.mcp).await
 }

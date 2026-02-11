@@ -184,9 +184,9 @@ impl ServerHandler for QtradeMcpServer {
 // ===== 行情查询（只读） =====
 
 fn get_quote_sync(stock_code: &str) -> anyhow::Result<String> {
-    let pid = crate::futu::ax_action::find_trading_app_pid()?;
+    let pid = crate::trading::executor::find_cft5_pid()?;
     let app = crate::futu::ax_action::create_app_element(pid)?;
-    let window = crate::futu::ax_action::get_main_window(app)?;
+    let window = crate::trading::executor::get_cft5_main_window(app)?;
 
     let elements = crate::futu::ax_action::find_all_elements(
         window,

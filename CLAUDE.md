@@ -187,11 +187,11 @@ port = 8900                    # MCP 服务器端口
   - `hk_buy(stock_code, price, quantity)` — 港股限价买入
   - `hk_sell(stock_code, price, quantity)` — 港股限价卖出
   - `get_quote(stock_code)` — 获取当前行情快照（只读）
-- **交易客户端**：财富通V5.0体验版（QNSApplication），通过 `pgrep -f QNS` / `pgrep -f 财富通` 查找进程
-- **交易流程**：AX 树导航（港股通→港股买入/卖出）→ 表单填写（代码/价格/数量）→ 点击提交 → 等待确认弹窗 → AX 文本验价 → 确认
-- **安全**：OCR 验价通过后才点击确认；任何步骤失败自动清理弹窗返回错误
+- **交易客户端**：财富通V5.0体验版（Qt），通过 `pgrep -f cft5` 查找主进程（排除 QtWebEngineProcess 子进程）
+- **交易流程**：AX 树导航（港股通→港股买入/卖出）→ 表单填写（代码/价格/数量）→ 点击提交 → 等待确认弹窗 → AX 文本验价 → 确认 → 检测错误弹窗
+- **安全**：AX 验价通过后才点击确认；交易系统返回错误弹窗自动捕获并关闭；任何步骤失败自动清理弹窗返回错误
 - **并发**：`tokio::sync::Mutex` 保证 UI 操作严格串行，MCP 请求排队
-- **零 CGEvent**：所有操作通过 AX API 完成（SetAttributeValue/PerformAction），不干扰用户键鼠
+- **前台/后台**：导航点击需短暂激活窗口（前台 CGEventPost HID），其余操作（表单填写、按钮点击、验价）均为后台 AX API
 
 ### 支持市场
 

@@ -1,13 +1,14 @@
 //! AX 写操作 + 元素搜索
 //!
 //! 基于 macOS Accessibility API 的 UI 自动化操作。
-//! 所有交互通过 AX API 完成，零 CGEvent，不干扰用户键鼠操作。
+//! 大部分交互通过 AX API 完成；对于 AXPress 不生效的 Qt 控件，
+//! 使用 CGEvent 前台坐标点击作为备用。
 
 use anyhow::{Context, Result};
 use core_foundation::base::{CFTypeRef, TCFType};
 use core_foundation::boolean::CFBoolean;
 use core_foundation::string::CFString;
-use tracing::{debug, info};
+use tracing::debug;
 
 // 额外的 AX FFI 绑定（写操作）
 extern "C" {
@@ -31,7 +32,7 @@ extern "C" {
 const AX_ERROR_SUCCESS: i32 = 0;
 
 /// 获取 AX 元素的属性值
-fn get_attr(element: CFTypeRef, attribute: &str) -> Result<CFTypeRef> {
+pub fn get_attr(element: CFTypeRef, attribute: &str) -> Result<CFTypeRef> {
     let attr_name = CFString::new(attribute);
     let mut value: CFTypeRef = std::ptr::null();
     let result = unsafe {
@@ -44,7 +45,7 @@ fn get_attr(element: CFTypeRef, attribute: &str) -> Result<CFTypeRef> {
 }
 
 /// 安全地将 CFTypeRef 转换为 String
-fn cftype_to_string(value: CFTypeRef) -> Option<String> {
+pub fn cftype_to_string(value: CFTypeRef) -> Option<String> {
     if value.is_null() {
         return None;
     }
@@ -59,7 +60,7 @@ fn cftype_to_string(value: CFTypeRef) -> Option<String> {
 }
 
 /// 安全地检查 CFTypeRef 是否为 CFArray
-fn as_cf_array(value: CFTypeRef) -> Option<CFTypeRef> {
+pub fn as_cf_array(value: CFTypeRef) -> Option<CFTypeRef> {
     if value.is_null() {
         return None;
     }
@@ -73,12 +74,12 @@ fn as_cf_array(value: CFTypeRef) -> Option<CFTypeRef> {
 }
 
 /// 获取 CFArray 的长度
-fn cf_array_count(array: CFTypeRef) -> isize {
+pub fn cf_array_count(array: CFTypeRef) -> isize {
     unsafe { core_foundation::array::CFArrayGetCount(array as *const _) }
 }
 
 /// 获取 CFArray 的第 i 个元素
-fn cf_array_get(array: CFTypeRef, index: isize) -> CFTypeRef {
+pub fn cf_array_get(array: CFTypeRef, index: isize) -> CFTypeRef {
     unsafe { core_foundation::array::CFArrayGetValueAtIndex(array as *const _, index) }
 }
 
@@ -105,6 +106,11 @@ pub fn get_description(element: CFTypeRef) -> Option<String> {
 /// 获取元素的 AXIdentifier
 pub fn get_identifier(element: CFTypeRef) -> Option<String> {
     get_attr(element, "AXIdentifier").ok().and_then(|v| cftype_to_string(v))
+}
+
+/// 获取元素的父元素
+pub fn get_parent(element: CFTypeRef) -> Option<CFTypeRef> {
+    get_attr(element, "AXParent").ok().filter(|v| !v.is_null())
 }
 
 /// 获取元素的子元素数组
@@ -143,18 +149,241 @@ pub fn set_text_field_value(element: CFTypeRef, text: &str) -> Result<()> {
 
 /// 聚焦元素（设置 AXFocused = true）
 pub fn focus_element(element: CFTypeRef) -> Result<()> {
-    let attr_name = CFString::new("AXFocused");
-    let cf_true = CFBoolean::true_value();
+    set_bool_attr(element, "AXFocused", true)
+}
+
+/// 设置布尔属性
+pub fn set_bool_attr(element: CFTypeRef, attribute: &str, value: bool) -> Result<()> {
+    let attr_name = CFString::new(attribute);
+    let cf_val = if value {
+        CFBoolean::true_value()
+    } else {
+        CFBoolean::false_value()
+    };
     let result = unsafe {
         AXUIElementSetAttributeValue(
             element,
             attr_name.as_concrete_TypeRef(),
-            cf_true.as_CFTypeRef(),
+            cf_val.as_CFTypeRef(),
         )
     };
     if result != AX_ERROR_SUCCESS {
-        anyhow::bail!("AXSetAttributeValue('AXFocused', true) failed: error {}", result);
+        anyhow::bail!(
+            "AXSetAttributeValue('{}', {}) failed: error {}",
+            attribute, value, result
+        );
     }
+    Ok(())
+}
+
+
+// ===== 前台坐标点击（CGEventPost to HID）=====
+
+/// 通过前台 CGEvent 坐标点击元素
+///
+/// 读取 AXPosition + AXSize 计算中心点，通过 CGEventPost(HID) 发送点击。
+/// 需要窗口已 raise 到前台。仅用于 AXPress 无效的 Qt 控件。
+pub fn click_at_element(element: CFTypeRef) -> Result<()> {
+    use core_graphics::event::{CGEvent, CGEventTapLocation, CGEventType, CGMouseButton};
+    use core_graphics::event_source::{CGEventSource, CGEventSourceStateID};
+    use core_graphics::geometry::{CGPoint, CGSize};
+    use std::ffi::c_void;
+
+    extern "C" {
+        fn AXValueGetValue(value: CFTypeRef, typ: u32, out: *mut c_void) -> bool;
+    }
+
+    // 读取元素位置和大小
+    let pos_ref = get_attr(element, "AXPosition")
+        .context("无法读取 AXPosition")?;
+    let mut position = CGPoint::new(0.0, 0.0);
+    if !unsafe {
+        AXValueGetValue(pos_ref, 1, &mut position as *mut _ as *mut c_void)
+    } {
+        anyhow::bail!("AXValueGetValue(AXPosition) failed");
+    }
+
+    let size_ref = get_attr(element, "AXSize")
+        .context("无法读取 AXSize")?;
+    let mut size = CGSize::new(0.0, 0.0);
+    if !unsafe {
+        AXValueGetValue(size_ref, 2, &mut size as *mut _ as *mut c_void)
+    } {
+        anyhow::bail!("AXValueGetValue(AXSize) failed");
+    }
+
+    let center = CGPoint::new(
+        position.x + size.width / 2.0,
+        position.y + size.height / 2.0,
+    );
+    debug!("click_at_element: center=({:.0},{:.0})", center.x, center.y);
+
+    // 前台 CGEventPost
+    let source = CGEventSource::new(CGEventSourceStateID::Private)
+        .map_err(|_| anyhow::anyhow!("Failed to create CGEventSource"))?;
+
+    let mouse_down = CGEvent::new_mouse_event(
+        source.clone(),
+        CGEventType::LeftMouseDown,
+        center,
+        CGMouseButton::Left,
+    )
+    .map_err(|_| anyhow::anyhow!("Failed to create mouse down event"))?;
+
+    let mouse_up = CGEvent::new_mouse_event(
+        source,
+        CGEventType::LeftMouseUp,
+        center,
+        CGMouseButton::Left,
+    )
+    .map_err(|_| anyhow::anyhow!("Failed to create mouse up event"))?;
+
+    mouse_down.post(CGEventTapLocation::HID);
+    std::thread::sleep(std::time::Duration::from_millis(50));
+    mouse_up.post(CGEventTapLocation::HID);
+
+    Ok(())
+}
+
+/// 后台点击：通过 CGEventPostToPSN 将鼠标事件直接发送到指定进程
+///
+/// 不需要窗口在前台。读取 AXPosition + AXSize 计算中心点，
+/// 通过 ProcessSerialNumber 定向投递给目标进程。
+pub fn click_at_element_to_pid(element: CFTypeRef, pid: i32) -> Result<()> {
+    use core_graphics::event::{CGEvent, CGEventType, CGMouseButton};
+    use core_graphics::event_source::{CGEventSource, CGEventSourceStateID};
+    use core_graphics::geometry::{CGPoint, CGSize};
+    use std::ffi::c_void;
+
+    #[repr(C)]
+    #[derive(Copy, Clone)]
+    struct ProcessSerialNumber {
+        high: u32,
+        low: u32,
+    }
+
+    extern "C" {
+        fn AXValueGetValue(value: CFTypeRef, typ: u32, out: *mut c_void) -> bool;
+        fn GetProcessForPID(pid: i32, psn: *mut ProcessSerialNumber) -> i32;
+        fn CGEventPostToPSN(psn: *const ProcessSerialNumber, event: core_graphics::sys::CGEventRef);
+    }
+
+    // 获取 PSN
+    let mut psn = ProcessSerialNumber { high: 0, low: 0 };
+    let status = unsafe { GetProcessForPID(pid, &mut psn) };
+    if status != 0 {
+        anyhow::bail!("GetProcessForPID({}) failed: {}", pid, status);
+    }
+
+    // 读取元素位置和大小
+    let pos_ref = get_attr(element, "AXPosition")
+        .context("无法读取 AXPosition")?;
+    let mut position = CGPoint::new(0.0, 0.0);
+    if !unsafe {
+        AXValueGetValue(pos_ref, 1, &mut position as *mut _ as *mut c_void)
+    } {
+        anyhow::bail!("AXValueGetValue(AXPosition) failed");
+    }
+
+    let size_ref = get_attr(element, "AXSize")
+        .context("无法读取 AXSize")?;
+    let mut size = CGSize::new(0.0, 0.0);
+    if !unsafe {
+        AXValueGetValue(size_ref, 2, &mut size as *mut _ as *mut c_void)
+    } {
+        anyhow::bail!("AXValueGetValue(AXSize) failed");
+    }
+
+    let center = CGPoint::new(
+        position.x + size.width / 2.0,
+        position.y + size.height / 2.0,
+    );
+    debug!("click_at_element_to_pid({}): center=({:.0},{:.0})", pid, center.x, center.y);
+
+    let source = CGEventSource::new(CGEventSourceStateID::Private)
+        .map_err(|_| anyhow::anyhow!("Failed to create CGEventSource"))?;
+
+    let mouse_down = CGEvent::new_mouse_event(
+        source.clone(),
+        CGEventType::LeftMouseDown,
+        center,
+        CGMouseButton::Left,
+    )
+    .map_err(|_| anyhow::anyhow!("Failed to create mouse down event"))?;
+
+    let mouse_up = CGEvent::new_mouse_event(
+        source,
+        CGEventType::LeftMouseUp,
+        center,
+        CGMouseButton::Left,
+    )
+    .map_err(|_| anyhow::anyhow!("Failed to create mouse up event"))?;
+
+    use foreign_types::ForeignType;
+    unsafe {
+        CGEventPostToPSN(&psn, mouse_down.as_ptr());
+    }
+    std::thread::sleep(std::time::Duration::from_millis(50));
+    unsafe {
+        CGEventPostToPSN(&psn, mouse_up.as_ptr());
+    }
+
+    Ok(())
+}
+
+/// 前台键盘输入：聚焦元素 → 全选 → 粘贴剪贴板内容
+///
+/// 用于 AXIncrementor 等不接受 AXValue 直接设值的 Qt 控件。
+/// 需要窗口已 raise 到前台。
+pub fn type_value_via_paste(element: CFTypeRef, value: &str) -> Result<()> {
+    use core_graphics::event::{CGEvent, CGEventFlags, CGEventTapLocation};
+    use core_graphics::event_source::{CGEventSource, CGEventSourceStateID};
+
+    // 设置剪贴板（通过 stdin 传入，避免 shell 注入）
+    let mut child = std::process::Command::new("pbcopy")
+        .stdin(std::process::Stdio::piped())
+        .spawn()
+        .context("pbcopy spawn failed")?;
+    if let Some(mut stdin) = child.stdin.take() {
+        use std::io::Write;
+        stdin.write_all(value.as_bytes()).context("write to pbcopy failed")?;
+    }
+    child.wait().context("pbcopy wait failed")?;
+
+    // 聚焦元素
+    focus_element(element)?;
+    std::thread::sleep(std::time::Duration::from_millis(50));
+
+    let source = CGEventSource::new(CGEventSourceStateID::Private)
+        .map_err(|_| anyhow::anyhow!("Failed to create CGEventSource"))?;
+
+    // Cmd+A (全选) — keycode 0 = 'a'
+    let select_all_down = CGEvent::new_keyboard_event(source.clone(), 0, true)
+        .map_err(|_| anyhow::anyhow!("Failed to create key event"))?;
+    select_all_down.set_flags(CGEventFlags::CGEventFlagCommand);
+    let select_all_up = CGEvent::new_keyboard_event(source.clone(), 0, false)
+        .map_err(|_| anyhow::anyhow!("Failed to create key event"))?;
+    select_all_up.set_flags(CGEventFlags::CGEventFlagCommand);
+
+    select_all_down.post(CGEventTapLocation::HID);
+    std::thread::sleep(std::time::Duration::from_millis(30));
+    select_all_up.post(CGEventTapLocation::HID);
+    std::thread::sleep(std::time::Duration::from_millis(50));
+
+    // Cmd+V (粘贴) — keycode 9 = 'v'
+    let paste_down = CGEvent::new_keyboard_event(source.clone(), 9, true)
+        .map_err(|_| anyhow::anyhow!("Failed to create key event"))?;
+    paste_down.set_flags(CGEventFlags::CGEventFlagCommand);
+    let paste_up = CGEvent::new_keyboard_event(source, 9, false)
+        .map_err(|_| anyhow::anyhow!("Failed to create key event"))?;
+    paste_up.set_flags(CGEventFlags::CGEventFlagCommand);
+
+    paste_down.post(CGEventTapLocation::HID);
+    std::thread::sleep(std::time::Duration::from_millis(30));
+    paste_up.post(CGEventTapLocation::HID);
+    std::thread::sleep(std::time::Duration::from_millis(100));
+
+    debug!("已通过 Cmd+V 输入: {}", value);
     Ok(())
 }
 
@@ -426,50 +655,6 @@ pub fn find_text_field_by_label(parent: CFTypeRef, label_text: &str) -> Option<C
 /// 查找交易客户端（财富通V5.0体验版）的进程 ID
 ///
 /// 通过 pgrep 搜索 "cft5"，再用 ps 验证进程名。
-pub fn find_trading_app_pid() -> Result<i32> {
-    use std::process::Command;
-
-    let output = Command::new("pgrep")
-        .args(["-f", "cft5"])
-        .output()
-        .context("Failed to run pgrep")?;
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    for line in stdout.lines() {
-        if let Ok(pid) = line.trim().parse::<i32>() {
-            // 验证确实是财富通
-            let check = Command::new("ps")
-                .args(["-p", &pid.to_string(), "-o", "comm="])
-                .output();
-            if let Ok(check_output) = check {
-                let comm = String::from_utf8_lossy(&check_output.stdout);
-                if comm.contains("cft5") || comm.contains("CFT") || comm.contains("财富通") {
-                    info!("Found trading app PID: {} ({})", pid, comm.trim());
-                    return Ok(pid);
-                }
-            }
-        }
-    }
-
-    // 备选：通过 AppleScript 查找
-    let output = Command::new("osascript")
-        .args([
-            "-e",
-            r#"tell application "System Events" to get unix id of (processes whose name contains "cft5")"#,
-        ])
-        .output();
-
-    if let Ok(output) = output {
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        if let Ok(pid) = stdout.trim().parse::<i32>() {
-            info!("Found trading app PID via AppleScript: {}", pid);
-            return Ok(pid);
-        }
-    }
-
-    anyhow::bail!("未找到财富通进程。请确认 财富通V5.0体验版 已启动。")
-}
-
 /// 创建应用的 AX 根元素
 pub fn create_app_element(pid: i32) -> Result<CFTypeRef> {
     let app_ref = unsafe { AXUIElementCreateApplication(pid) };
@@ -477,21 +662,6 @@ pub fn create_app_element(pid: i32) -> Result<CFTypeRef> {
         anyhow::bail!("Failed to create AXUIElement for PID {}", pid);
     }
     Ok(app_ref)
-}
-
-/// 获取应用的第一个窗口
-pub fn get_main_window(app: CFTypeRef) -> Result<CFTypeRef> {
-    let windows = get_attr(app, "AXWindows").context("Failed to get AXWindows")?;
-    let win_arr = as_cf_array(windows).context("AXWindows is not an array")?;
-    let count = cf_array_count(win_arr);
-    if count == 0 {
-        anyhow::bail!("No windows found");
-    }
-    let window = cf_array_get(win_arr, 0);
-    if window.is_null() {
-        anyhow::bail!("First window is null");
-    }
-    Ok(window)
 }
 
 /// 激活（raise）窗口

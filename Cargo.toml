@@ -13,6 +13,8 @@ objc2-core-foundation = { version = "0.3", features = ["CFCGTypes", "CFArray", "
 objc2-core-graphics = { version = "0.3", features = ["CGImage", "CGWindow", "CGGeometry", "CGColorSpace"] }
 objc2-vision = { version = "0.3", features = ["VNRecognizeTextRequest", "VNRequestHandler", "VNObservation", "VNRequest", "VNTypes"] }
 core-foundation = "0.10"
+core-graphics = "0.24"
+foreign-types = "0.5"
 
 # FutuOpenD OpenAPI 方案
 prost = "0.13"
