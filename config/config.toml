@@ -6,7 +6,7 @@ source = "openapi"
 refresh_interval_secs = 1
 
 [futu]
-opend_host = "127.0.0.1"
+opend_host = "100.64.0.21"
 opend_port = 11111
 
 [alerts]
@@ -36,3 +36,7 @@ volume_spike_ratio = 500.0     # 量能突变倍数阈值（量速率 vs 基线�
 olume_spike_turnover = 500.0    # 量能突变最低增量成交额（万元）
 tick_signal_display_minutes = 5
 warmup_ticks = 3                # 启动预热 tick 数
+
+[mcp]
+host = "127.0.0.1"
+port = 8900

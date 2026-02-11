@@ -28,6 +28,10 @@ pub struct AppConfig {
     /// 分析配置
     #[serde(default)]
     pub analysis: AnalysisConfig,
+
+    /// MCP 服务器配置
+    #[serde(default)]
+    pub mcp: McpConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -250,6 +254,34 @@ impl Default for AnalysisConfig {
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct McpConfig {
+    /// MCP 服务器绑定地址
+    #[serde(default = "default_mcp_host")]
+    pub host: String,
+
+    /// MCP 服务器端口
+    #[serde(default = "default_mcp_port")]
+    pub port: u16,
+}
+
+impl Default for McpConfig {
+    fn default() -> Self {
+        Self {
+            host: default_mcp_host(),
+            port: default_mcp_port(),
+        }
+    }
+}
+
+fn default_mcp_host() -> String {
+    "127.0.0.1".to_string()
+}
+
+fn default_mcp_port() -> u16 {
+    8900
+}
+
 fn default_daily_kline_days() -> u32 {
     120
 }
@@ -396,6 +428,7 @@ impl Default for AppConfig {
             alerts: AlertsConfig::default(),
             ui: UiConfig::default(),
             analysis: AnalysisConfig::default(),
+            mcp: McpConfig::default(),
         }
     }
 }

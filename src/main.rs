@@ -3,6 +3,7 @@ mod analysis;
 mod config;
 mod data;
 mod futu;
+mod mcp;
 mod models;
 mod trading;
 mod ui;
@@ -48,6 +49,8 @@ enum Commands {
     TestApi,
     /// 测试窗口截图 + Vision OCR 识别效果
     TestOcr,
+    /// 启动 MCP 交易服务器
+    McpServer,
 }
 
 #[tokio::main]
@@ -89,6 +92,7 @@ async fn main() -> Result<()> {
         Commands::Debug => cmd_debug(config),
         Commands::TestApi => cmd_test_api(config).await,
         Commands::TestOcr => cmd_test_ocr(config).await,
+        Commands::McpServer => cmd_mcp_server(config).await,
     }
 }
 
@@ -906,6 +910,11 @@ async fn cmd_test_ocr(_config: AppConfig) -> Result<()> {
     result?;
 
     Ok(())
+}
+
+/// 启动 MCP 交易服务器
+async fn cmd_mcp_server(config: AppConfig) -> Result<()> {
+    crate::mcp::server::run_mcp_server(&config.mcp).await
 }
 
 /// 计算两个日期字符串之间的自然日间隔（"YYYY-MM-DD" 格式）

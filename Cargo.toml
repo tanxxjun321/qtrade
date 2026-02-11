@@ -17,7 +17,7 @@ core-foundation = "0.10"
 # FutuOpenD OpenAPI 方案
 prost = "0.13"
 prost-types = "0.13"
-tokio-util = { version = "0.7", features = ["codec"] }
+tokio-util = { version = "0.7", features = ["codec", "rt"] }
 bytes = "1"
 
 # 数据与配置
@@ -42,6 +42,11 @@ reqwest = { version = "0.12", features = ["json"] }
 # 日志
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# MCP Server
+rmcp = { version = "0.15", features = ["server", "macros", "transport-streamable-http-server"] }
+axum = "0.8"
+schemars = "1.0"
 
 # 工具
 chrono = { version = "0.4", features = ["serde"] }

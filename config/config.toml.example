@@ -60,3 +60,9 @@ volume_min_baseline_secs = 30.0     # 基线不足此秒数不触发
 volume_spike_turnover = 1000.0      # 量能突变最低增量成交额（万元）
 tick_signal_display_minutes = 5
 warmup_ticks = 3                # 启动预热 tick 数（前 N 个 tick 不产生信号/提醒）
+
+[mcp]
+# MCP 交易服务器绑定地址
+host = "127.0.0.1"
+# MCP 交易服务器端口
+port = 8900

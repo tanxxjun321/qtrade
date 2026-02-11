@@ -23,6 +23,7 @@ qtrade - 量化交易盯盘系统。从 macOS 上的富途牛牛 App 获取实�
 - `cargo run -- test-api` - 测试 FutuOpenD 连接
 - `cargo run -- debug` - 检查 AX 权限并打印 App 元素树
 - `cargo run -- test-ocr` - 测试窗口截图 + Vision OCR 识别效果
+- `cargo run -- mcp-server` - 启动 MCP 交易服务器（港股买卖）
 - `cargo check` - 快速类型检查
 
 ## Architecture
@@ -31,12 +32,13 @@ qtrade - 量化交易盯盘系统。从 macOS 上的富途牛牛 App 获取实�
 
 ```
 src/
-├── main.rs                  # CLI 入口 (clap)：start(默认) / watchlist / debug / test-api / test-ocr
-├── config.rs                # TOML 配置加载 (serde)
+├── main.rs                  # CLI 入口 (clap)：start(默认) / watchlist / debug / test-api / test-ocr / mcp-server
+├── config.rs                # TOML 配置加载 (serde)，含 McpConfig
 ├── models.rs                # 核心数据模型：StockCode, Market, QuoteSnapshot, Signal(含MsMacdBuy/Sell), Sentiment, DailyKline, TimedSignal, AlertEvent, UsMarketSession
 ├── futu/
 │   ├── watchlist.rs         # 读取 plist 自选股（自动扫描用户目录）
 │   ├── accessibility.rs     # macOS AXUIElement 读取 App 窗口 + AX 表格 frame 检测
+│   ├── ax_action.rs         # AX 写操作（PerformAction/SetAttributeValue）+ 元素搜索 + 树导航
 │   ├── ocr.rs               # 窗口截图 + Vision OCR 文字识别
 │   └── openapi.rs           # FutuOpenD TCP 客户端（JSON 模式，含日K线 proto 3103）
 ├── data/
@@ -51,9 +53,13 @@ src/
 │   ├── rules.rs             # 涨跌幅(多级阈值)/目标价规则
 │   ├── manager.rs           # 穿越检测 + 日内去重 + 通知
 │   └── notify.rs            # 终端 + macOS 通知 + Webhook
+├── mcp/
+│   ├── mod.rs               # MCP 模块入口
+│   └── server.rs            # MCP tool 定义（hk_buy/hk_sell/get_quote）+ Streamable HTTP server
 ├── ui/
 │   └── dashboard.rs         # ratatui TUI 仪表盘（含 tick 事件信号 + 日线信号 + 情绪标签显示）
 └── trading/
+    ├── executor.rs          # 交易自动化状态机（AX 导航 + 表单填写 + 验价 + 确认）
     └── paper.rs             # 纸上交易（预留）
 ```
 
@@ -167,7 +173,25 @@ volume_min_baseline_secs = 30.0  # 基线不足此秒数不触发
 volume_spike_turnover = 1000.0  # 量能突变最低增量成交额（万元）
 tick_signal_display_minutes = 5 # 信号显示保持时间 (分钟)
 warmup_ticks = 3               # 启动预热 tick 数
+
+[mcp]
+host = "127.0.0.1"             # MCP 服务器绑定地址
+port = 8900                    # MCP 服务器端口
 ```
+
+### MCP 交易服务器
+
+- **协议**：MCP (Model Context Protocol) Streamable HTTP，基于 rmcp 0.15 + axum 0.8
+- **端点**：`http://127.0.0.1:8900/mcp`（可配置）
+- **工具**：
+  - `hk_buy(stock_code, price, quantity)` — 港股限价买入
+  - `hk_sell(stock_code, price, quantity)` — 港股限价卖出
+  - `get_quote(stock_code)` — 获取当前行情快照（只读）
+- **交易客户端**：财富通V5.0体验版（QNSApplication），通过 `pgrep -f QNS` / `pgrep -f 财富通` 查找进程
+- **交易流程**：AX 树导航（港股通→港股买入/卖出）→ 表单填写（代码/价格/数量）→ 点击提交 → 等待确认弹窗 → AX 文本验价 → 确认
+- **安全**：OCR 验价通过后才点击确认；任何步骤失败自动清理弹窗返回错误
+- **并发**：`tokio::sync::Mutex` 保证 UI 操作严格串行，MCP 请求排队
+- **零 CGEvent**：所有操作通过 AX API 完成（SetAttributeValue/PerformAction），不干扰用户键鼠
 
 ### 支持市场
 
@@ -184,4 +208,5 @@ warmup_ticks = 3               # 启动预热 tick 数
 - ratatui 0.29 + crossterm 0.28
 - core-foundation 0.10 + objc2 0.6
 - chrono 0.4 + chrono-tz 0.10（美股时段 DST 处理）
+- rmcp 0.15 + axum 0.8 + schemars 1.0（MCP 服务器）
 - edition 2021
