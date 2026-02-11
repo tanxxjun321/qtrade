@@ -23,7 +23,7 @@ qtrade - 量化交易盯盘系统。从 macOS 上的富途牛牛 App 获取实�
 - `cargo run -- test-api` - 测试 FutuOpenD 连接
 - `cargo run -- debug` - 检查 AX 权限并打印 App 元素树
 - `cargo run -- test-ocr` - 测试窗口截图 + Vision OCR 识别效果
-- `cargo run -- mcp-server` - 启动 MCP 交易服务器（港股买卖）
+- `cargo run -- mcp-server` - 启动 MCP 交易服务器（港股 + A股买卖）
 - `cargo check` - 快速类型检查
 
 ## Architecture
@@ -55,7 +55,7 @@ src/
 │   └── notify.rs            # 终端 + macOS 通知 + Webhook
 ├── mcp/
 │   ├── mod.rs               # MCP 模块入口
-│   └── server.rs            # MCP tool 定义（hk_buy/hk_sell/get_quote）+ Streamable HTTP server
+│   └── server.rs            # MCP tool 定义（buy/sell/get_quote）+ Streamable HTTP server
 ├── ui/
 │   └── dashboard.rs         # ratatui TUI 仪表盘（含 tick 事件信号 + 日线信号 + 情绪标签显示）
 └── trading/
@@ -184,11 +184,14 @@ port = 8900                    # MCP 服务器端口
 - **协议**：MCP (Model Context Protocol) Streamable HTTP，基于 rmcp 0.15 + axum 0.8
 - **端点**：`http://127.0.0.1:8900/mcp`（可配置）
 - **工具**：
-  - `hk_buy(stock_code, price, quantity)` — 港股限价买入
-  - `hk_sell(stock_code, price, quantity)` — 港股限价卖出
+  - `buy(stock_code, price, quantity)` — 限价买入（自动识别港股/A股）
+  - `sell(stock_code, price, quantity)` — 限价卖出（自动识别港股/A股）
   - `get_quote(stock_code)` — 获取当前行情快照（只读）
+- **市场识别**：`TradingMarket::infer()` 根据代码格式自动推断 — 5位数字=港股，6位 6xx/0xx/3xx=A股
+- **价格精度**：港股 3 位小数 (HKD)，A股 2 位小数 (CNY)
 - **交易客户端**：财富通V5.0体验版（Qt），通过 `pgrep -f cft5` 查找主进程（排除 QtWebEngineProcess 子进程）
-- **交易流程**：AX 树导航（港股通→港股买入/卖出）→ 表单填写（代码/价格/数量）→ 点击提交 → 等待确认弹窗 → AX 文本验价 → 确认 → 检测错误弹窗
+- **交易流程**：AX 树导航（港股通/股票 tab → 买入/卖出面板）→ 表单填写（代码/价格/数量）→ 点击提交 → 等待确认弹窗 → AX 文本验价 → 确认 → 检测错误弹窗
+- **窗口恢复**：`prepare_trading_window()` 自动处理 App 隐藏(Cmd+H)、窗口最小化、跨桌面(Space)、主窗口关闭(状态栏图标恢复)
 - **安全**：AX 验价通过后才点击确认；交易系统返回错误弹窗自动捕获并关闭；任何步骤失败自动清理弹窗返回错误
 - **并发**：`tokio::sync::Mutex` 保证 UI 操作严格串行，MCP 请求排队
 - **前台/后台**：导航点击需短暂激活窗口（前台 CGEventPost HID），其余操作（表单填写、按钮点击、验价）均为后台 AX API
