@@ -5,17 +5,16 @@
 
 use std::sync::Arc;
 use tokio::sync::Mutex;
-use tracing::info;
+use tracing::{debug, info};
 
 use rmcp::{
-    ErrorData as McpError, ServerHandler,
     handler::server::{router::tool::ToolRouter, wrapper::Parameters},
     model::*,
     schemars, tool, tool_handler, tool_router,
     transport::streamable_http_server::{
-        StreamableHttpService, StreamableHttpServerConfig,
-        session::local::LocalSessionManager,
+        session::local::LocalSessionManager, StreamableHttpServerConfig, StreamableHttpService,
     },
+    ErrorData as McpError, ServerHandler,
 };
 
 use crate::config::McpConfig;
@@ -75,7 +74,9 @@ impl QtradeMcpServer {
         }
     }
 
-    #[tool(description = "买入委托。支持港股（5位代码如00700）和A股（6位代码如600519）。自动识别市场，通过财富通客户端提交限价买入订单。提交前会验证确认弹窗中的价格和代码。")]
+    #[tool(
+        description = "买入委托。支持港股（5位代码如00700）和A股（6位代码如600519）。自动识别市场，通过财富通客户端提交限价买入订单。提交前会验证确认弹窗中的价格和代码。"
+    )]
     async fn buy(
         &self,
         Parameters(params): Parameters<BuyParams>,
@@ -115,7 +116,9 @@ impl QtradeMcpServer {
         }
     }
 
-    #[tool(description = "卖出委托。支持港股（5位代码如00700）和A股（6位代码如600519）。自动识别市场，通过财富通客户端提交限价卖出订单。提交前会验证确认弹窗中的价格和代码。")]
+    #[tool(
+        description = "卖出委托。支持港股（5位代码如00700）和A股（6位代码如600519）。自动识别市场，通过财富通客户端提交限价卖出订单。提交前会验证确认弹窗中的价格和代码。"
+    )]
     async fn sell(
         &self,
         Parameters(params): Parameters<SellParams>,
@@ -155,7 +158,9 @@ impl QtradeMcpServer {
         }
     }
 
-    #[tool(description = "获取股票当前行情快照（只读）。返回最新价、涨跌幅等信息。可用于下单前确认价格。")]
+    #[tool(
+        description = "获取股票当前行情快照（只读）。返回最新价、涨跌幅等信息。可用于下单前确认价格。"
+    )]
     async fn get_quote(
         &self,
         Parameters(params): Parameters<GetQuoteParams>,
@@ -181,10 +186,8 @@ impl QtradeMcpServer {
 impl ServerHandler for QtradeMcpServer {
     fn get_info(&self) -> ServerInfo {
         ServerInfo {
-            protocol_version: ProtocolVersion::V_2024_11_05,
-            capabilities: ServerCapabilities::builder()
-                .enable_tools()
-                .build(),
+            protocol_version: ProtocolVersion::LATEST,
+            capabilities: ServerCapabilities::builder().enable_tools().build(),
             server_info: Implementation {
                 name: "qtrade-mcp".to_string(),
                 version: env!("CARGO_PKG_VERSION").to_string(),
@@ -258,7 +261,22 @@ pub async fn run_mcp_server(config: &McpConfig) -> anyhow::Result<()> {
         },
     );
 
-    let router = axum::Router::new().nest_service("/mcp", service);
+    let router =
+        axum::Router::new()
+            .nest_service("/mcp", service)
+            .layer(axum::middleware::from_fn(
+                |req: axum::extract::Request, next: axum::middleware::Next| async move {
+                    debug!(
+                        method = %req.method(),
+                        uri = %req.uri(),
+                        headers = ?req.headers(),
+                        "MCP 收到请求"
+                    );
+                    let resp = next.run(req).await;
+                    debug!(status = %resp.status(), "MCP 响应");
+                    resp
+                },
+            ));
 
     let bind_addr = format!("{}:{}", config.host, config.port);
     let listener = tokio::net::TcpListener::bind(&bind_addr).await?;
