@@ -33,7 +33,9 @@ qtrade/
 ├── docs/
 │   ├── PLAN.md                     # 本文件
 │   ├── DAILY_KLINE_CACHE.md        # 日K线缓存与增量拉取策略
-│   └── US_MARKET_SESSIONS.md       # 美股交易时段与显示规则
+│   ├── US_MARKET_SESSIONS.md       # 美股交易时段与显示规则
+│   ├── MCP_SERVER.md               # MCP 交易服务器文档
+│   └── TRADING_EXECUTOR.md         # 交易执行器（财富通V5.0）文档
 ├── config/
 │   └── config.toml.example
 ├── src/
@@ -64,10 +66,14 @@ qtrade/
 │   ├── ui/
 │   │   ├── mod.rs
 │   │   └── dashboard.rs            # ratatui TUI 仪表盘（含 tick 事件信号 + 日线信号 + 情绪标签显示）
-│   └── trading/                    # 预留交易模块（第一阶段仅 trait 定义）
-│       ├── mod.rs
-│       └── paper.rs
-└── tests/                        # 单元测试内嵌于各模块中（37 个）
+│   ├── trading/                    # 交易自动化模块（财富通V5.0）
+│   │   ├── mod.rs
+│   │   ├── executor.rs             # 交易自动化状态机（AX 导航 + 表单填写 + 验价 + 确认）
+│   │   └── paper.rs                # 纸上交易（预留）
+│   └── mcp/
+│       ├── mod.rs                  # MCP 模块入口
+│       └── server.rs               # MCP tool 定义（buy/sell/get_quote）+ Streamable HTTP server
+└── tests/                        # 单元测试内嵌于各模块中（92 个）
 ```
 
 ## 数据流架构
@@ -96,6 +102,10 @@ AlertMgr  Analysis  Dashboard
              │
     Dashboard ← tick_signals (带情绪标签+时间衰减)
 
+MCP Server (可选):
+  mcp/server.rs → TradingExecutor → 财富通V5.0 App
+  Tools: buy / sell / get_quote
+
 watchlist.rs：从 plist 读取自选股列表（三种方案共用）
 ```
 
@@ -104,6 +114,7 @@ watchlist.rs：从 plist 读取自选股列表（三种方案共用）
 - **数据采集任务**：定时（每 1-2 秒）通过 AX API 或 OpenAPI 获取最新行情
 - **分析任务**：收到新数据后计算指标、评估规则
 - **UI 渲染**：主线程运行 ratatui 事件循环，通过 channel 接收数据更新
+- **MCP 服务器**：独立任务运行 Streamable HTTP 服务（可选，默认关闭）
 - 组件间通信：`tokio::sync::mpsc` channel
 
 ## 关键设计决策
@@ -112,11 +123,14 @@ watchlist.rs：从 plist 读取自选股列表（三种方案共用）
 |------|------|------|
 | 数据获取方案 A | macOS Accessibility API | 直接读 UI 元素文本，无需额外软件 |
 | 数据获取方案 B | FutuOpenD + OpenAPI (TCP protobuf) | 结构化数据，支持 K 线/订单簿/实时推送 |
+| 数据获取方案 C | 窗口截图 + Vision OCR | 支持被遮挡窗口，AX 辅助布局检测 |
 | 自选股来源 | 读 App 本地 plist 文件 | 已验证可行，免配置 |
 | 异步运行时 | tokio | Rust 标准异步运行时 |
 | 终端 UI | ratatui + crossterm | Rust 生态最成熟的 TUI 框架 |
 | 配置格式 | TOML | Rust 原生支持，serde 集成好 |
 | macOS 互操作 | objc2 系列 crate | 当前标准，替代已归档的 icrate |
+| MCP 协议 | Streamable HTTP (rmcp 0.15) | 官方协议，支持工具调用 |
+| 交易客户端 | 财富通V5.0 (cft5) | Qt App，支持港股通 + A股 |
 
 ## 核心依赖 (Cargo.toml)
 
@@ -195,7 +209,7 @@ prost-build = "0.13"
 - 实现 `analysis/daily.rs`：日K线分析引擎（JSON 缓存 + 逐只自适应拉取 + 断点续传）
 - 信号情绪标签：所有信号标注 Sentiment（利多/利空/中性），dashboard 显示 `[利多]日内新高`、`[日利空]MACD 死叉` 等
 - MS-MACD 动能拐点信号：扫描 DIF/DEA 序列，仅在拐点首日（最后一根K线）触发买入/卖出信号
-- 单元测试（48 个）
+- 单元测试（92 个）
 
 ### Step 6: 提醒系统 ✅
 - 实现 `alerts/rules.rs`：涨跌幅阈值、目标价规则（已移除噪声源 SignalRule / VolumeSpikeRule）
@@ -210,15 +224,26 @@ prost-build = "0.13"
 - 日K线缓存与增量拉取（`docs/DAILY_KLINE_CACHE.md`）
 - 预留 `trading/` trait 定义
 
+### Step 8: MCP 交易服务器 + 交易执行器 ✅
+- 实现 `trading/executor.rs`：财富通V5.0 交易自动化
+  - AX 树导航（港股通/股票 tab → 买入/卖出面板）
+  - 表单填写（代码/价格/数量）+ 验价 + 确认
+  - 自动市场识别（港股 5位/A股 6位）
+- 实现 `mcp/server.rs`：MCP Streamable HTTP 服务器
+  - 工具：`buy` / `sell` / `get_quote`
+  - 自动市场识别，支持港股 + A股
+- 配置 `[mcp]` 段：host、port
+
 ## 验证方式
 
 1. **自选股读取**：`cargo run -- watchlist` → 打印从 plist 读取的自选股
 2. **AX 数据获取**：打开富途牛牛 App → `cargo run -- start` → 终端显示实时价格
 3. **OpenAPI 数据源**：启动 FutuOpenD → 配置 `source = "openapi"` → 确认实时推送行情
 4. **OCR 数据源**：`cargo run -- test-ocr` → 显示 AX GridFrame 检测结果 + OCR 识别行情；AX 成功时 Pass 1 被跳过
-5. **指标计算**：`cargo test` → 验证 MA/MACD/RSI 对已知数据的计算结果
+5. **指标计算**：`cargo test` → 验证 MA/MACD/RSI/MS-MACD 对已知数据的计算结果（92 个测试）
 6. **提醒触发**：设置涨跌幅阈值为 0.01% → 确认提醒触发和冷却机制生效
 7. **端到端**：App 运行中 → qtrade 持续监控 → 行情变化时终端实时更新 + 提醒
+8. **MCP 服务器**：`cargo run -- mcp-server` → 启动 MCP 服务，可通过 MCP 客户端调用 buy/sell/get_quote
 
 ## 未来扩展方向
 

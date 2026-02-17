@@ -82,5 +82,5 @@ curr_dif > 0 && curr_dea > 0
 ## 验证方式
 
 1. `cargo build` — 编译通过
-2. `cargo test` — 所有测试通过（含新增测试）
+2. `cargo test` — 92 个测试全部通过（含 MS-MACD 新增测试）
 3. `cargo run -- start` → 按 `d` 显示日线信号，确认 MS-MACD 信号正常显示
