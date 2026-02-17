@@ -327,6 +327,7 @@ impl AnalysisEngine {
         self.windows.remove(code);
         self.vol_trackers.remove(code);
         self.tick_states.remove(code);
+        self.adv_map.remove(code);
     }
 }
 

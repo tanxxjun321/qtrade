@@ -1,8 +1,11 @@
 //! ratatui 终端仪表盘
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::io;
 use std::time::{Duration, Instant};
+
+/// 最大最近提醒数量
+pub const MAX_RECENT_ALERTS: usize = 1000;
 
 use crossterm::event::{self, Event, KeyCode, KeyEventKind};
 use crossterm::terminal::{
@@ -15,8 +18,8 @@ use ratatui::widgets::*;
 use chrono::{DateTime, Local};
 
 use crate::models::{
-    AlertEvent, Market, QuoteSnapshot, Sentiment, Signal, StockCode,
-    TechnicalIndicators, TimedSignal,
+    AlertEvent, Market, QuoteSnapshot, Sentiment, Signal, StockCode, TechnicalIndicators,
+    TimedSignal,
 };
 
 /// 仪表盘状态
@@ -25,8 +28,8 @@ pub struct DashboardState {
     pub quotes: Vec<QuoteSnapshot>,
     /// 技术指标
     pub indicators: HashMap<StockCode, TechnicalIndicators>,
-    /// 最近提醒
-    pub recent_alerts: Vec<AlertEvent>,
+    /// 最近提醒（循环缓冲区，最多保留 MAX_RECENT_ALERTS 条）
+    pub recent_alerts: VecDeque<AlertEvent>,
     /// 数据源状态
     pub source_name: String,
     /// 数据源是否连接
@@ -55,6 +58,8 @@ pub struct DashboardState {
     pub daily_kline_status: String,
     /// Tick 信号（事件型，带触发时间）
     pub tick_signals: HashMap<StockCode, Vec<(Signal, DateTime<Local>)>>,
+    /// 每只股票最大日线信号数量（通常与 daily_kline_days 一致）
+    pub max_daily_signals_per_stock: usize,
 }
 
 /// 排序列
@@ -68,11 +73,15 @@ pub enum SortColumn {
 }
 
 impl DashboardState {
-    pub fn new() -> Self {
+    /// 创建新的仪表盘状态
+    ///
+    /// # Arguments
+    /// * `max_daily_signals` - 每只股票最大日线信号数量，建议与 config.analysis.daily_kline_days 一致
+    pub fn new(max_daily_signals: usize) -> Self {
         Self {
             quotes: Vec::new(),
             indicators: HashMap::new(),
-            recent_alerts: Vec::new(),
+            recent_alerts: VecDeque::with_capacity(MAX_RECENT_ALERTS),
             source_name: String::new(),
             source_connected: false,
             last_update: None,
@@ -87,6 +96,7 @@ impl DashboardState {
             show_daily_signals: true,
             daily_kline_status: String::new(),
             tick_signals: HashMap::new(),
+            max_daily_signals_per_stock: max_daily_signals,
         }
     }
 
@@ -118,7 +128,9 @@ impl DashboardState {
                         new_q.name = existing.name.clone();
                     }
                     // 采用非 Unknown 的市场（OCR 回写修正）
-                    if new_q.code.market == Market::Unknown && existing.code.market != Market::Unknown {
+                    if new_q.code.market == Market::Unknown
+                        && existing.code.market != Market::Unknown
+                    {
                         new_q.code.market = existing.code.market;
                     }
                     *existing = new_q;
@@ -160,6 +172,15 @@ impl DashboardState {
             }
         }
 
+        // 清理每只股票过多的日线信号
+        for signals in self.daily_signals.values_mut() {
+            if signals.len() > self.max_daily_signals_per_stock {
+                // 保留最新的信号
+                let start = signals.len() - self.max_daily_signals_per_stock;
+                *signals = signals.split_off(start);
+            }
+        }
+
         // 防越界
         if !self.quotes.is_empty() {
             if self.selected_row >= self.quotes.len() {
@@ -179,31 +200,57 @@ impl DashboardState {
             SortColumn::Code => {
                 self.quotes.sort_by(|a, b| {
                     let cmp = a.code.display_code().cmp(&b.code.display_code());
-                    if asc { cmp } else { cmp.reverse() }
+                    if asc {
+                        cmp
+                    } else {
+                        cmp.reverse()
+                    }
                 });
             }
             SortColumn::Name => {
                 self.quotes.sort_by(|a, b| {
                     let cmp = a.name.cmp(&b.name);
-                    if asc { cmp } else { cmp.reverse() }
+                    if asc {
+                        cmp
+                    } else {
+                        cmp.reverse()
+                    }
                 });
             }
             SortColumn::Price => {
                 self.quotes.sort_by(|a, b| {
-                    let cmp = a.last_price.partial_cmp(&b.last_price).unwrap_or(std::cmp::Ordering::Equal);
-                    if asc { cmp } else { cmp.reverse() }
+                    let cmp = a
+                        .last_price
+                        .partial_cmp(&b.last_price)
+                        .unwrap_or(std::cmp::Ordering::Equal);
+                    if asc {
+                        cmp
+                    } else {
+                        cmp.reverse()
+                    }
                 });
             }
             SortColumn::ChangePct => {
                 self.quotes.sort_by(|a, b| {
-                    let cmp = a.change_pct.partial_cmp(&b.change_pct).unwrap_or(std::cmp::Ordering::Equal);
-                    if asc { cmp } else { cmp.reverse() }
+                    let cmp = a
+                        .change_pct
+                        .partial_cmp(&b.change_pct)
+                        .unwrap_or(std::cmp::Ordering::Equal);
+                    if asc {
+                        cmp
+                    } else {
+                        cmp.reverse()
+                    }
                 });
             }
             SortColumn::Volume => {
                 self.quotes.sort_by(|a, b| {
                     let cmp = a.volume.cmp(&b.volume);
-                    if asc { cmp } else { cmp.reverse() }
+                    if asc {
+                        cmp
+                    } else {
+                        cmp.reverse()
+                    }
                 });
             }
         }
@@ -233,7 +280,7 @@ pub fn render(frame: &mut Frame, state: &DashboardState) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(3),   // 标题
+            Constraint::Length(3),  // 标题
             Constraint::Min(10),    // 主表格
             Constraint::Length(10), // 提醒（8 条 + 2 行边框）
             Constraint::Length(1),  // 状态栏
@@ -266,10 +313,24 @@ fn render_title(frame: &mut Frame, area: Rect) {
 /// 渲染行情表格
 fn render_quote_table(frame: &mut Frame, area: Rect, state: &DashboardState) {
     let header_cells = [
-        "代码", "名称", "现价", "涨跌%", "涨跌额", "成交量", "换手率%", "振幅%", "信号",
+        "代码",
+        "名称",
+        "现价",
+        "涨跌%",
+        "涨跌额",
+        "成交量",
+        "换手率%",
+        "振幅%",
+        "信号",
     ]
     .iter()
-    .map(|h| Cell::from(*h).style(Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)));
+    .map(|h| {
+        Cell::from(*h).style(
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        )
+    });
 
     let header = Row::new(header_cells).height(1);
 
@@ -290,13 +351,18 @@ fn render_quote_table(frame: &mut Frame, area: Rect, state: &DashboardState) {
             let (display_price, display_change, display_change_pct) = if use_extended {
                 let ext = q.extended_price.unwrap();
                 let chg = ext - q.last_price;
-                let pct = if q.last_price > 0.0 { chg / q.last_price * 100.0 } else { 0.0 };
+                let pct = if q.last_price > 0.0 {
+                    chg / q.last_price * 100.0
+                } else {
+                    0.0
+                };
                 (ext, chg, pct)
             } else {
                 (q.last_price, q.change, q.change_pct)
             };
 
-            let change_color = match (display_change_pct > 0.0, display_change_pct < 0.0, selected) {
+            let change_color = match (display_change_pct > 0.0, display_change_pct < 0.0, selected)
+            {
                 (true, _, true) => Color::LightRed,
                 (true, _, false) => Color::Red,
                 (_, true, true) => Color::LightGreen,
@@ -329,10 +395,7 @@ fn render_quote_table(frame: &mut Frame, area: Rect, state: &DashboardState) {
                             signal_spans.push(Span::raw("  "));
                         }
                         let color = sentiment_color(s.signal.sentiment(), selected);
-                        signal_spans.push(Span::styled(
-                            s.to_string(),
-                            Style::new().fg(color),
-                        ));
+                        signal_spans.push(Span::styled(s.to_string(), Style::new().fg(color)));
                     }
                 }
             }
@@ -367,8 +430,7 @@ fn render_quote_table(frame: &mut Frame, area: Rect, state: &DashboardState) {
                 vec![
                     Cell::from(q.code.display_code()),
                     Cell::from(q.name.clone()),
-                    Cell::from(price_str)
-                        .style(Style::new().fg(change_color)),
+                    Cell::from(price_str).style(Style::new().fg(change_color)),
                     Cell::from(format!("{:+.2}%", display_change_pct))
                         .style(Style::new().fg(change_color)),
                     Cell::from(format!("{:+.2}", display_change))
@@ -484,8 +546,7 @@ fn render_status_bar(frame: &mut Frame, area: Rect, state: &DashboardState) {
         state.source_name, conn_status, update_info, error_info, daily_info
     );
 
-    let bar = Paragraph::new(status)
-        .style(Style::default().bg(Color::DarkGray).fg(Color::White));
+    let bar = Paragraph::new(status).style(Style::default().bg(Color::DarkGray).fg(Color::White));
 
     frame.render_widget(bar, area);
 }

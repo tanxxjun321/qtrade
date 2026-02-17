@@ -2,7 +2,7 @@
 log_level = "info"
 
 [data_source]
-source = "openapi"
+source = "ocr"
 refresh_interval_secs = 1
 
 [futu]
@@ -14,6 +14,7 @@ enabled = true
 cooldown_secs = 300
 change_threshold_pct = 3.0
 change_thresholds = [3.0, 5.0, 7.0, 10.0]
+webhook_url = "https://open.feishu.cn/open-apis/bot/v2/hook/ac2386d8-59a7-4583-afd4-f518e8bb5813"
 
 [ui]
 page_size = 50

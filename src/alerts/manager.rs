@@ -3,7 +3,7 @@
 //! 只在 change_pct 从 < 阈值 穿越到 >= 阈值时触发，
 //! 同股票 + 同规则 + 同方向一天只报一次，不会反复报警。
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 
 use chrono::NaiveDate;
 use tracing::{debug, info};
@@ -12,6 +12,9 @@ use crate::models::{AlertEvent, QuoteSnapshot, StockCode};
 
 use super::notify::Notifier;
 use super::rules::AlertRule;
+
+/// 最大提醒历史记录数
+const MAX_HISTORY: usize = 1000;
 
 /// 提醒管理器
 pub struct AlertManager {
@@ -23,8 +26,8 @@ pub struct AlertManager {
     fired_today: HashMap<(StockCode, String), NaiveDate>,
     /// 通知器
     notifier: Notifier,
-    /// 提醒历史
-    history: Vec<AlertEvent>,
+    /// 提醒历史（循环缓冲区，最多保留 MAX_HISTORY 条）
+    history: VecDeque<AlertEvent>,
     /// 是否启用
     enabled: bool,
 }
@@ -36,9 +39,15 @@ impl AlertManager {
             prev_change_pct: HashMap::new(),
             fired_today: HashMap::new(),
             notifier,
-            history: Vec::new(),
+            history: VecDeque::with_capacity(MAX_HISTORY),
             enabled: true,
         }
+    }
+
+    /// 清理过期的 fired_today 条目（非今日日期）
+    fn cleanup_old_entries(&mut self) {
+        let today = chrono::Local::now().date_naive();
+        self.fired_today.retain(|_, date| *date == today);
     }
 
     /// 添加规则
@@ -58,6 +67,11 @@ impl AlertManager {
     ) -> Vec<AlertEvent> {
         if !self.enabled {
             return Vec::new();
+        }
+
+        // 清理过期条目（每 100 次评估清理一次，避免频繁操作）
+        if self.history.len() % 100 == 0 {
+            self.cleanup_old_entries();
         }
 
         let prev = self.prev_change_pct.insert(quote.code.clone(), quote.change_pct);
@@ -118,7 +132,11 @@ impl AlertManager {
 
                 // 记录历史 + 标记日内已触发
                 self.fired_today.insert(fire_key, today);
-                self.history.push(event.clone());
+                // 循环缓冲区：超过容量时移除最旧的
+                if self.history.len() >= MAX_HISTORY {
+                    self.history.pop_front();
+                }
+                self.history.push_back(event.clone());
                 events.push(event);
             }
         }
@@ -127,8 +145,14 @@ impl AlertManager {
     }
 
     /// 获取最近的提醒历史
-    pub fn recent_history(&self, count: usize) -> &[AlertEvent] {
-        let start = self.history.len().saturating_sub(count);
-        &self.history[start..]
+    pub fn recent_history(&self, count: usize) -> Vec<&AlertEvent> {
+        self.history.iter().rev().take(count).collect()
+    }
+
+    /// 移除指定股票的所有数据（watchlist 变更时调用）
+    pub fn remove_stock(&mut self, code: &StockCode) {
+        self.prev_change_pct.remove(code);
+        // 同时清理 fired_today 中该股票的所有条目
+        self.fired_today.retain(|(c, _), _| c != code);
     }
 }

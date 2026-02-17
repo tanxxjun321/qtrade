@@ -191,7 +191,7 @@ impl CfArray {
     }
 
     /// 遍历数组
-    pub fn iter(&self) -> CfArrayIter {
+    pub fn iter(&self) -> CfArrayIter<'_> {
         CfArrayIter {
             array: self,
             index: 0,

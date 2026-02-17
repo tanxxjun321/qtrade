@@ -24,7 +24,7 @@ use crate::analysis::engine::AnalysisEngine;
 use crate::config::AppConfig;
 use crate::data::provider::DataProviderKind;
 use crate::models::{QuoteSnapshot, StockCode};
-use crate::ui::dashboard::DashboardState;
+use crate::ui::dashboard::{DashboardState, MAX_RECENT_ALERTS};
 
 #[derive(Parser)]
 #[command(name = "qtrade", about = "量化交易盯盘系统")]
@@ -256,8 +256,9 @@ async fn cmd_start(config: AppConfig) -> Result<()> {
     // 数据通道
     let (quote_tx, mut quote_rx) = mpsc::channel::<Vec<QuoteSnapshot>>(32);
 
-    // 仪表盘状态
-    let dash_state = Arc::new(Mutex::new(DashboardState::new()));
+    // 仪表盘状态（每只股票最大日线信号数量与 daily_kline_days 一致）
+    let max_daily_signals = config.analysis.daily_kline_days as usize;
+    let dash_state = Arc::new(Mutex::new(DashboardState::new(max_daily_signals)));
     {
         let mut state = dash_state.lock().await;
         state.source_name = provider.name().to_string();
@@ -301,6 +302,7 @@ async fn cmd_start(config: AppConfig) -> Result<()> {
     let monitor_config_user_id = config.futu.user_id.clone();
     let monitor_engine = engine.clone();
     let monitor_daily_engine = daily_engine.clone();
+    let monitor_alert_mgr = alert_manager.clone();
     let monitor_dash = dash_state.clone();
     let monitor_watch_tx = watch_tx.clone();
     let monitor_handle = tokio::spawn(async move {
@@ -369,6 +371,13 @@ async fn cmd_start(config: AppConfig) -> Result<()> {
                 {
                     let mut de = monitor_daily_engine.lock().await;
                     de.remove_stocks(&removed_codes);
+                }
+                // 清理提醒管理器
+                {
+                    let mut amgr = monitor_alert_mgr.lock().await;
+                    for code in &removed_codes {
+                        amgr.remove_stock(code);
+                    }
                 }
                 for code in &removed_codes {
                     info!("Removed stock: {}", code.display_code());
@@ -590,7 +599,11 @@ async fn cmd_start(config: AppConfig) -> Result<()> {
                 for sig in sigs {
                     if let crate::models::Signal::VolumeSpike { ratio, price, delta } = sig {
                         let name = name_map.get(code).map(|s| s.as_str()).unwrap_or("");
-                        state.recent_alerts.push(crate::models::AlertEvent {
+                        // 循环缓冲区：超过容量时移除最旧的
+                        if state.recent_alerts.len() >= MAX_RECENT_ALERTS {
+                            state.recent_alerts.pop_front();
+                        }
+                        state.recent_alerts.push_back(crate::models::AlertEvent {
                             code: code.clone(),
                             name: name.to_string(),
                             rule_name: "放量".to_string(),
