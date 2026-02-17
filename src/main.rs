@@ -1274,5 +1274,6 @@ fn save_cgimage_png(image: &objc2_core_foundation::CFRetained<objc2_core_graphic
         if !CGImageDestinationFinalize(dest) {
             eprintln!("Failed to finalize image at {}", path_str);
         }
+        core_foundation::base::CFRelease(dest);
     }
 }

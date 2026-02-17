@@ -4,16 +4,15 @@
 //! 这些测试被标记为 `#[ignore]`，可以使用 `cargo test -- --ignored` 运行。
 
 use crate::futu::ax::{
+    action::Matcher,
     app::Application,
     element::Element,
     error::{AxError, AxResult},
-    types::{AxElement, AxValue, CfArray, CfNumber, CfString, CfType, Rect},
-    action::Matcher,
+    types::{AxElement, CfArray, CfNumber, CfString, CfType, Rect},
 };
-use core_foundation::base::{CFRetain, CFTypeRef, TCFType};
-use core_foundation::string::CFString as CFCString;
+use core_foundation::base::{CFRetain, TCFType};
 use core_foundation::number::CFNumber as CFNumberType;
-use std::ffi::c_void;
+use core_foundation::string::CFString as CFCString;
 
 // ===== types.rs 测试 =====
 
@@ -347,7 +346,11 @@ mod integration_tests {
     fn test_application_new_current_process() {
         let pid = std::process::id() as i32;
         let result = Application::new(pid);
-        assert!(result.is_ok(), "Failed to create Application: {:?}", result.err());
+        assert!(
+            result.is_ok(),
+            "Failed to create Application: {:?}",
+            result.err()
+        );
 
         let app = result.unwrap();
         assert_eq!(app.pid(), pid);
@@ -416,7 +419,10 @@ mod integration_tests {
         let dump = app.dump_tree(2);
         assert!(!dump.is_empty());
         // 打印前 500 字符
-        println!("Tree dump (first 500 chars):\n{}", &dump[..dump.len().min(500)]);
+        println!(
+            "Tree dump (first 500 chars):\n{}",
+            &dump[..dump.len().min(500)]
+        );
     }
 
     #[test]
