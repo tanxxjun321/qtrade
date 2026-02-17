@@ -2,8 +2,8 @@
 //!
 //! 包含需要 CGEvent 或剪贴板配合的 UI 操作。
 
-use super::error::{AxError, AxResult};
 use super::element::Element;
+use super::error::{AxError, AxResult};
 use tracing::debug;
 
 /// 通过前台 CGEvent 坐标点击元素
@@ -16,34 +16,22 @@ pub fn click_at_element(element: &Element) -> AxResult<()> {
     use core_graphics::geometry::CGPoint;
 
     // 读取元素位置和大小
-    let frame = element.frame()
+    let frame = element
+        .frame()
         .map_err(|e| AxError::Other(format!("无法读取元素框架: {}", e)))?;
 
-    let center = CGPoint::new(
-        frame.x + frame.width / 2.0,
-        frame.y + frame.height / 2.0,
-    );
+    let center = CGPoint::new(frame.x + frame.width / 2.0, frame.y + frame.height / 2.0);
     debug!("click_at_element: center=({:.0},{:.0})", center.x, center.y);
 
     // 前台 CGEventPost
     let source = CGEventSource::new(CGEventSourceStateID::Private)
         .map_err(|_| AxError::Other("Failed to create CGEventSource".to_string()))?;
 
-    let mouse_down = CGEvent::new_mouse_event(
-        source.clone(),
-        CGEventType::LeftMouseDown,
-        center,
-        CGMouseButton::Left,
-    )
-    .map_err(|_| AxError::Other("Failed to create mouse down event".to_string()))?;
+    let mouse_down = CGEvent::new_mouse_event(source.clone(), CGEventType::LeftMouseDown, center, CGMouseButton::Left)
+        .map_err(|_| AxError::Other("Failed to create mouse down event".to_string()))?;
 
-    let mouse_up = CGEvent::new_mouse_event(
-        source,
-        CGEventType::LeftMouseUp,
-        center,
-        CGMouseButton::Left,
-    )
-    .map_err(|_| AxError::Other("Failed to create mouse up event".to_string()))?;
+    let mouse_up = CGEvent::new_mouse_event(source, CGEventType::LeftMouseUp, center, CGMouseButton::Left)
+        .map_err(|_| AxError::Other("Failed to create mouse up event".to_string()))?;
 
     mouse_down.post(CGEventTapLocation::HID);
     std::thread::sleep(std::time::Duration::from_millis(50));
@@ -65,13 +53,15 @@ pub fn set_string_value_via_paste(element: &Element, value: &str) -> AxResult<()
         .stdin(std::process::Stdio::piped())
         .spawn()
         .map_err(|e| AxError::Other(format!("pbcopy spawn failed: {}", e)))?;
-    
+
     if let Some(mut stdin) = child.stdin.take() {
         use std::io::Write;
-        stdin.write_all(value.as_bytes())
+        stdin
+            .write_all(value.as_bytes())
             .map_err(|e| AxError::Other(format!("write to pbcopy failed: {}", e)))?;
     }
-    child.wait()
+    child
+        .wait()
         .map_err(|e| AxError::Other(format!("pbcopy wait failed: {}", e)))?;
 
     // 聚焦元素
@@ -158,43 +148,39 @@ pub enum Matcher<'a> {
 }
 
 /// 使用 Matcher 查找元素
-pub fn find_element_with_matcher(
-    root: &Element,
-    role: &str,
-    matcher: &Matcher,
-    max_depth: usize,
-) -> Option<Element> {
-    root.find(|e| {
-        if e.role().as_deref() != Some(role) {
-            return false;
-        }
-        match matcher {
-            Matcher::Title(expected) => e.title().as_deref() == Some(*expected),
-            Matcher::TitleContains(substr) => e.title().map_or(false, |t| t.contains(*substr)),
-            Matcher::Identifier(expected) => e.identifier().as_deref() == Some(*expected),
-            Matcher::Description(expected) => e.description().as_deref() == Some(*expected),
-            Matcher::Any => true,
-        }
-    }, max_depth)
+pub fn find_element_with_matcher(root: &Element, role: &str, matcher: &Matcher, max_depth: usize) -> Option<Element> {
+    root.find(
+        |e| {
+            if e.role().as_deref() != Some(role) {
+                return false;
+            }
+            match matcher {
+                Matcher::Title(expected) => e.title().as_deref() == Some(*expected),
+                Matcher::TitleContains(substr) => e.title().map_or(false, |t| t.contains(*substr)),
+                Matcher::Identifier(expected) => e.identifier().as_deref() == Some(*expected),
+                Matcher::Description(expected) => e.description().as_deref() == Some(*expected),
+                Matcher::Any => true,
+            }
+        },
+        max_depth,
+    )
 }
 
 /// 使用 Matcher 查找所有匹配元素
-pub fn find_all_elements_with_matcher(
-    root: &Element,
-    role: &str,
-    matcher: &Matcher,
-    max_depth: usize,
-) -> Vec<Element> {
-    root.find_all(|e| {
-        if e.role().as_deref() != Some(role) {
-            return false;
-        }
-        match matcher {
-            Matcher::Title(expected) => e.title().as_deref() == Some(*expected),
-            Matcher::TitleContains(substr) => e.title().map_or(false, |t| t.contains(*substr)),
-            Matcher::Identifier(expected) => e.identifier().as_deref() == Some(*expected),
-            Matcher::Description(expected) => e.description().as_deref() == Some(*expected),
-            Matcher::Any => true,
-        }
-    }, max_depth)
+pub fn find_all_elements_with_matcher(root: &Element, role: &str, matcher: &Matcher, max_depth: usize) -> Vec<Element> {
+    root.find_all(
+        |e| {
+            if e.role().as_deref() != Some(role) {
+                return false;
+            }
+            match matcher {
+                Matcher::Title(expected) => e.title().as_deref() == Some(*expected),
+                Matcher::TitleContains(substr) => e.title().map_or(false, |t| t.contains(*substr)),
+                Matcher::Identifier(expected) => e.identifier().as_deref() == Some(*expected),
+                Matcher::Description(expected) => e.description().as_deref() == Some(*expected),
+                Matcher::Any => true,
+            }
+        },
+        max_depth,
+    )
 }

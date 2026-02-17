@@ -8,10 +8,7 @@ pub trait AlertRule: Send + Sync {
     fn name(&self) -> String;
 
     /// 评估规则，返回 (消息, 级别, 情绪方向)
-    fn evaluate(
-        &self,
-        quote: &QuoteSnapshot,
-    ) -> Option<(String, AlertSeverity, Option<Sentiment>)>;
+    fn evaluate(&self, quote: &QuoteSnapshot) -> Option<(String, AlertSeverity, Option<Sentiment>)>;
 }
 
 /// 涨跌幅阈值规则
@@ -31,10 +28,7 @@ impl AlertRule for ChangeThresholdRule {
         format!("涨跌幅{}%", self.threshold)
     }
 
-    fn evaluate(
-        &self,
-        quote: &QuoteSnapshot,
-    ) -> Option<(String, AlertSeverity, Option<Sentiment>)> {
+    fn evaluate(&self, quote: &QuoteSnapshot) -> Option<(String, AlertSeverity, Option<Sentiment>)> {
         let abs_change = quote.change_pct.abs();
         if abs_change >= self.threshold {
             let direction = if quote.change_pct > 0.0 { "涨" } else { "跌" };
@@ -87,10 +81,7 @@ impl AlertRule for TargetPriceRule {
         "目标价提醒".to_string()
     }
 
-    fn evaluate(
-        &self,
-        quote: &QuoteSnapshot,
-    ) -> Option<(String, AlertSeverity, Option<Sentiment>)> {
+    fn evaluate(&self, quote: &QuoteSnapshot) -> Option<(String, AlertSeverity, Option<Sentiment>)> {
         if quote.code.display_code() != self.stock_code {
             return None;
         }

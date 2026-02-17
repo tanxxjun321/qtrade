@@ -8,9 +8,7 @@ use std::time::{Duration, Instant};
 pub const MAX_RECENT_ALERTS: usize = 1000;
 
 use crossterm::event::{self, Event, KeyCode, KeyEventKind};
-use crossterm::terminal::{
-    disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
-};
+use crossterm::terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen};
 use crossterm::ExecutableCommand;
 use ratatui::prelude::*;
 use ratatui::widgets::*;
@@ -18,8 +16,7 @@ use ratatui::widgets::*;
 use chrono::{DateTime, Local};
 
 use crate::models::{
-    AlertEvent, Market, QuoteSnapshot, Sentiment, Signal, StockCode, TechnicalIndicators,
-    TimedSignal,
+    AlertEvent, Market, QuoteSnapshot, Sentiment, Signal, StockCode, TechnicalIndicators, TimedSignal,
 };
 
 /// 仪表盘状态
@@ -119,8 +116,7 @@ impl DashboardState {
                     }
                     // code 字符串相同但 market 不同：Unknown 视为通配
                     q.code.code == new_q.code.code
-                        && (q.code.market == Market::Unknown
-                            || new_q.code.market == Market::Unknown)
+                        && (q.code.market == Market::Unknown || new_q.code.market == Market::Unknown)
                 });
                 if let Some(existing) = found {
                     // 保留已有的中文名（API 返回的是英文名）
@@ -128,9 +124,7 @@ impl DashboardState {
                         new_q.name = existing.name.clone();
                     }
                     // 采用非 Unknown 的市场（OCR 回写修正）
-                    if new_q.code.market == Market::Unknown
-                        && existing.code.market != Market::Unknown
-                    {
+                    if new_q.code.market == Market::Unknown && existing.code.market != Market::Unknown {
                         new_q.code.market = existing.code.market;
                     }
                     *existing = new_q;
@@ -144,11 +138,7 @@ impl DashboardState {
     }
 
     /// 同步 watchlist 变更：移除已删股票、添加新增股票
-    pub fn sync_watchlist(
-        &mut self,
-        new_codes: &[StockCode],
-        new_entries: &[crate::models::WatchlistEntry],
-    ) {
+    pub fn sync_watchlist(&mut self, new_codes: &[StockCode], new_entries: &[crate::models::WatchlistEntry]) {
         use std::collections::HashSet;
 
         let new_set: HashSet<&StockCode> = new_codes.iter().collect();
@@ -324,13 +314,7 @@ fn render_quote_table(frame: &mut Frame, area: Rect, state: &DashboardState) {
         "信号",
     ]
     .iter()
-    .map(|h| {
-        Cell::from(*h).style(
-            Style::default()
-                .fg(Color::Yellow)
-                .add_modifier(Modifier::BOLD),
-        )
-    });
+    .map(|h| Cell::from(*h).style(Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)));
 
     let header = Row::new(header_cells).height(1);
 
@@ -361,8 +345,7 @@ fn render_quote_table(frame: &mut Frame, area: Rect, state: &DashboardState) {
                 (q.last_price, q.change, q.change_pct)
             };
 
-            let change_color = match (display_change_pct > 0.0, display_change_pct < 0.0, selected)
-            {
+            let change_color = match (display_change_pct > 0.0, display_change_pct < 0.0, selected) {
                 (true, _, true) => Color::LightRed,
                 (true, _, false) => Color::Red,
                 (_, true, true) => Color::LightGreen,
@@ -431,10 +414,8 @@ fn render_quote_table(frame: &mut Frame, area: Rect, state: &DashboardState) {
                     Cell::from(q.code.display_code()),
                     Cell::from(q.name.clone()),
                     Cell::from(price_str).style(Style::new().fg(change_color)),
-                    Cell::from(format!("{:+.2}%", display_change_pct))
-                        .style(Style::new().fg(change_color)),
-                    Cell::from(format!("{:+.2}", display_change))
-                        .style(Style::new().fg(change_color)),
+                    Cell::from(format!("{:+.2}%", display_change_pct)).style(Style::new().fg(change_color)),
+                    Cell::from(format!("{:+.2}", display_change)).style(Style::new().fg(change_color)),
                     Cell::from(format_volume(q.volume)),
                     Cell::from(format!("{:.2}", q.turnover_rate)),
                     Cell::from(format!("{:.2}", q.amplitude)),
@@ -531,7 +512,9 @@ fn render_status_bar(frame: &mut Frame, area: Rect, state: &DashboardState) {
     };
 
     let error_info = match &state.last_error {
-        Some(e) => format!(" | 错误: {}", if e.len() > 40 { &e[..40] } else { e }),
+        Some(e) => {
+            format!(" | 错误: {}", if e.len() > 40 { &e[..40] } else { e })
+        }
         None => String::new(),
     };
 

@@ -21,21 +21,13 @@ extern "C" {
     pub fn AXUIElementCreateApplication(pid: i32) -> CFTypeRef;
 
     /// 复制属性值
-    pub fn AXUIElementCopyAttributeValue(
-        element: CFTypeRef,
-        attribute: CFStringRef,
-        value: *mut CFTypeRef,
-    ) -> i32;
+    pub fn AXUIElementCopyAttributeValue(element: CFTypeRef, attribute: CFStringRef, value: *mut CFTypeRef) -> i32;
 
     /// 复制所有属性名
     pub fn AXUIElementCopyAttributeNames(element: CFTypeRef, names: *mut CFTypeRef) -> i32;
 
     /// 设置属性值
-    pub fn AXUIElementSetAttributeValue(
-        element: CFTypeRef,
-        attribute: CFStringRef,
-        value: CFTypeRef,
-    ) -> i32;
+    pub fn AXUIElementSetAttributeValue(element: CFTypeRef, attribute: CFStringRef, value: CFTypeRef) -> i32;
 
     /// 执行操作
     pub fn AXUIElementPerformAction(element: CFTypeRef, action: CFStringRef) -> i32;
@@ -76,12 +68,7 @@ extern "C" {
     pub fn CFArrayGetValueAtIndex(array: CFTypeRef, index: isize) -> CFTypeRef;
 
     // CFString 操作
-    pub fn CFStringGetCString(
-        string: CFStringRef,
-        buffer: *mut u8,
-        buffer_size: isize,
-        encoding: u32,
-    ) -> bool;
+    pub fn CFStringGetCString(string: CFStringRef, buffer: *mut u8, buffer_size: isize, encoding: u32) -> bool;
 
     // CFNumber 操作
     pub fn CFNumberGetValue(number: CFTypeRef, typ: CFNumberType, value: *mut c_void) -> bool;

@@ -118,20 +118,11 @@ pub fn macd(data: &[f64], fast: usize, slow: usize, signal: usize) -> MacdResult
         }
     }
 
-    MacdResult {
-        dif,
-        dea,
-        histogram,
-    }
+    MacdResult { dif, dea, histogram }
 }
 
 /// 计算最新 MACD 值 (dif, dea, histogram)
-pub fn macd_latest(
-    data: &[f64],
-    fast: usize,
-    slow: usize,
-    signal: usize,
-) -> (Option<f64>, Option<f64>, Option<f64>) {
+pub fn macd_latest(data: &[f64], fast: usize, slow: usize, signal: usize) -> (Option<f64>, Option<f64>, Option<f64>) {
     let result = macd(data, fast, slow, signal);
     let dif = result.dif.last().copied().flatten();
     let dea = result.dea.last().copied().flatten();
@@ -215,7 +206,7 @@ mod tests {
         let data = vec![1.0, 2.0, 3.0, 4.0, 5.0];
         assert_eq!(sma(&data, 3), Some(4.0)); // (3+4+5)/3
         assert_eq!(sma(&data, 5), Some(3.0)); // (1+2+3+4+5)/5
-        assert_eq!(sma(&data, 6), None);       // 数据不足
+        assert_eq!(sma(&data, 6), None); // 数据不足
     }
 
     #[test]
@@ -263,8 +254,8 @@ mod tests {
     fn test_rsi_range() {
         // RSI 应在 0-100 之间
         let data: Vec<f64> = vec![
-            44.34, 44.09, 44.15, 43.61, 44.33, 44.83, 45.10, 45.42, 45.84, 46.08,
-            45.89, 46.03, 44.72, 44.07, 44.17, 43.56, 44.65, 44.83,
+            44.34, 44.09, 44.15, 43.61, 44.33, 44.83, 45.10, 45.42, 45.84, 46.08, 45.89, 46.03, 44.72, 44.07, 44.17,
+            43.56, 44.65, 44.83,
         ];
         let rsi_val = rsi(&data, 14);
         if let Some(v) = rsi_val {

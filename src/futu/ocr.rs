@@ -11,8 +11,8 @@ use objc2::rc::Retained;
 use objc2::AnyThread;
 use objc2_core_foundation::{CFRetained, CGPoint, CGRect, CGSize};
 use objc2_core_graphics::{
-    CGImage, CGImageCreateWithImageInRect, CGWindowID, CGWindowImageOption,
-    CGWindowListCopyWindowInfo, CGWindowListCreateImage, CGWindowListOption,
+    CGImage, CGImageCreateWithImageInRect, CGWindowID, CGWindowImageOption, CGWindowListCopyWindowInfo,
+    CGWindowListCreateImage, CGWindowListOption,
 };
 use objc2_foundation::{NSArray, NSDictionary, NSString};
 use objc2_vision::{
@@ -151,14 +151,8 @@ pub fn capture_window(window_id: u32) -> Result<CFRetained<CGImage>> {
 
     // 优先 BestResolution | BoundsIgnoreFraming，失败则降级到 NominalResolution | BoundsIgnoreFraming
     let options: &[(CGWindowImageOption, &str)] = &[
-        (
-            CGWindowImageOption::from_bits_retain(0x09),
-            "BestResolution",
-        ),
-        (
-            CGWindowImageOption::from_bits_retain(0x11),
-            "NominalResolution",
-        ),
+        (CGWindowImageOption::from_bits_retain(0x09), "BestResolution"),
+        (CGWindowImageOption::from_bits_retain(0x11), "NominalResolution"),
     ];
 
     for (opt, label) in options {
@@ -177,10 +171,7 @@ pub fn capture_window(window_id: u32) -> Result<CFRetained<CGImage>> {
             );
             return Ok(image);
         }
-        debug!(
-            "CGWindowListCreateImage failed with {} for window {}",
-            label, window_id
-        );
+        debug!("CGWindowListCreateImage failed with {} for window {}", label, window_id);
     }
 
     // 全部失败，生成详细错误
@@ -205,11 +196,8 @@ fn recognize_text_with_level(image: &CGImage, accurate: bool) -> Result<Vec<OcrT
     objc2::rc::autoreleasepool(|_pool| {
         unsafe {
             let empty_dict: Retained<NSDictionary<NSString>> = NSDictionary::new();
-            let handler = VNImageRequestHandler::initWithCGImage_options(
-                VNImageRequestHandler::alloc(),
-                image,
-                &empty_dict,
-            );
+            let handler =
+                VNImageRequestHandler::initWithCGImage_options(VNImageRequestHandler::alloc(), image, &empty_dict);
 
             let request = VNRecognizeTextRequest::new();
 
@@ -246,12 +234,7 @@ fn recognize_text_with_level(image: &CGImage, accurate: bool) -> Result<Vec<OcrT
                     blocks.push(OcrTextBlock {
                         text,
                         confidence,
-                        bbox: (
-                            bbox.origin.x,
-                            bbox.origin.y,
-                            bbox.size.width,
-                            bbox.size.height,
-                        ),
+                        bbox: (bbox.origin.x, bbox.origin.y, bbox.size.width, bbox.size.height),
                     });
                 }
             }
@@ -351,10 +334,7 @@ pub fn detect_layout(blocks: &[OcrTextBlock]) -> WindowLayout {
         watchlist_x.0, watchlist_x.1, quote_x
     );
 
-    WindowLayout {
-        watchlist_x,
-        quote_x,
-    }
+    WindowLayout { watchlist_x, quote_x }
 }
 
 /// 按归一化坐标裁剪图像区域
@@ -370,11 +350,7 @@ pub fn crop_image(image: &CGImage, x_range: (f64, f64)) -> Result<CFRetained<CGI
 ///
 /// `x_range`: (left, right) 归一化 X 范围 0.0-1.0
 /// `y_range`: 可选 (top, bottom) 归一化 Y 范围 0.0-1.0
-pub fn crop_image_xy(
-    image: &CGImage,
-    x_range: (f64, f64),
-    y_range: Option<(f64, f64)>,
-) -> Result<CFRetained<CGImage>> {
+pub fn crop_image_xy(image: &CGImage, x_range: (f64, f64), y_range: Option<(f64, f64)>) -> Result<CFRetained<CGImage>> {
     let w = CGImage::width(Some(image)) as f64;
     let h = CGImage::height(Some(image)) as f64;
 
@@ -399,8 +375,7 @@ pub fn crop_image_xy(
         w, h, rect.origin.x, rect.origin.y, rect.size.width, rect.size.height
     );
 
-    CGImageCreateWithImageInRect(Some(image), rect)
-        .context("CGImageCreateWithImageInRect returned null")
+    CGImageCreateWithImageInRect(Some(image), rect).context("CGImageCreateWithImageInRect returned null")
 }
 
 /// 将 OCR 文字块按 Y 坐标聚类成行
@@ -444,12 +419,7 @@ pub fn group_into_rows(blocks: &[OcrTextBlock]) -> Vec<Vec<&OcrTextBlock>> {
 
     // 行内按 X 坐标从左到右排序
     for row in rows.iter_mut() {
-        row.sort_by(|a, b| {
-            a.bbox
-                .0
-                .partial_cmp(&b.bbox.0)
-                .unwrap_or(std::cmp::Ordering::Equal)
-        });
+        row.sort_by(|a, b| a.bbox.0.partial_cmp(&b.bbox.0).unwrap_or(std::cmp::Ordering::Equal));
     }
 
     rows
@@ -573,10 +543,7 @@ pub fn parse_watchlist_from_ocr(rows: &[Vec<&OcrTextBlock>]) -> Vec<QuoteSnapsho
                 if matches!(pm, Market::SG | Market::FX) {
                     for block in row {
                         let text = block.text.trim();
-                        if !text.is_empty()
-                            && text.len() <= 10
-                            && text.chars().all(|c| c.is_ascii_alphanumeric())
-                        {
+                        if !text.is_empty() && text.len() <= 10 && text.chars().all(|c| c.is_ascii_alphanumeric()) {
                             row_code = Some(StockCode::new(pm, text));
                             break;
                         }
@@ -587,35 +554,31 @@ pub fn parse_watchlist_from_ocr(rows: &[Vec<&OcrTextBlock>]) -> Vec<QuoteSnapsho
 
         // 如果本行有股票代码 → 与 pending 信息配对，生成 QuoteSnapshot
         if let Some(code) = row_code {
-            let market = pending_market
-                .take()
-                .or(row_market.take())
-                .unwrap_or(code.market);
+            let market = pending_market.take().or(row_market.take()).unwrap_or(code.market);
             let name = pending_name.take().or(row_name.take()).unwrap_or_default();
 
             // 主价格优先用 pending（上一行的名称行数据）
             // 代码行自身的价格/涨跌幅作为盘前/盘后扩展数据（美股）
             // 仅当代码行同时有价格和涨跌幅时才识别为扩展数据（排除噪声数字）
-            let (price, change_pct, change_amt, ext_price, ext_pct) =
-                if let Some(pp) = pending_price.take() {
-                    let pct = pending_change_pct.take();
-                    let amt = pending_change_amt.take().or(row_change_amt.take());
-                    let has_extended = row_price.is_some() && row_change_pct.is_some();
-                    if has_extended {
-                        (pp, pct, amt, row_price.take(), row_change_pct.take())
-                    } else {
-                        (pp, pct, amt, None, None)
-                    }
+            let (price, change_pct, change_amt, ext_price, ext_pct) = if let Some(pp) = pending_price.take() {
+                let pct = pending_change_pct.take();
+                let amt = pending_change_amt.take().or(row_change_amt.take());
+                let has_extended = row_price.is_some() && row_change_pct.is_some();
+                if has_extended {
+                    (pp, pct, amt, row_price.take(), row_change_pct.take())
                 } else {
-                    // 无 pending → 代码行数据作为主价格（HK/A股单行格式）
-                    (
-                        row_price.take().unwrap_or(0.0),
-                        row_change_pct.take(),
-                        row_change_amt.take(),
-                        None,
-                        None,
-                    )
-                };
+                    (pp, pct, amt, None, None)
+                }
+            } else {
+                // 无 pending → 代码行数据作为主价格（HK/A股单行格式）
+                (
+                    row_price.take().unwrap_or(0.0),
+                    row_change_pct.take(),
+                    row_change_amt.take(),
+                    None,
+                    None,
+                )
+            };
 
             if price > 0.0 {
                 // 优先用 OCR 识别的涨跌幅；无涨跌幅但有涨跌额时反算
@@ -671,8 +634,7 @@ pub fn parse_watchlist_from_ocr(rows: &[Vec<&OcrTextBlock>]) -> Vec<QuoteSnapsho
                 pending_price = row_price;
                 pending_change_pct = row_change_pct;
                 pending_change_amt = row_change_amt;
-            } else if row_price.is_some() && (row_change_pct.is_some() || row_change_amt.is_some())
-            {
+            } else if row_price.is_some() && (row_change_pct.is_some() || row_change_amt.is_some()) {
                 // 价格+涨跌信息同行 → 可信的价格行（选中股价格可能单独一行）
                 pending_price = row_price;
                 pending_change_pct = row_change_pct;
@@ -733,10 +695,7 @@ fn ocr_parse_change_amt(s: &str) -> Option<f64> {
 fn ocr_parse_pct(s: &str) -> Option<f64> {
     let s = s.trim();
     if s.ends_with('%') {
-        let num = s
-            .trim_end_matches('%')
-            .trim_start_matches('+')
-            .replace(',', ".");
+        let num = s.trim_end_matches('%').trim_start_matches('+').replace(',', ".");
         num.parse::<f64>().ok()
     } else {
         None
@@ -833,8 +792,7 @@ fn compute_image_hash(image: &CGImage) -> String {
 
     // 获取像素数据
     let data_provider = CGImage::data_provider(Some(image));
-    let cf_data =
-        data_provider.and_then(|dp| objc2_core_graphics::CGDataProviderCopyData(Some(&dp)));
+    let cf_data = data_provider.and_then(|dp| objc2_core_graphics::CGDataProviderCopyData(Some(&dp)));
 
     let mut hasher = Sha1::new();
     // 图像尺寸也参与哈希
@@ -883,10 +841,7 @@ pub fn ocr_capture_and_parse(
             Err(e) => {
                 last_err = Some(e);
                 if attempt < MAX_RETRIES {
-                    warn!(
-                        "find_futu_window failed (attempt {}), retrying...",
-                        attempt + 1
-                    );
+                    warn!("find_futu_window failed (attempt {}), retrying...", attempt + 1);
                     std::thread::sleep(std::time::Duration::from_millis(RETRY_DELAY_MS));
                 }
                 continue;
@@ -906,10 +861,7 @@ pub fn ocr_capture_and_parse(
             Err(e) => {
                 last_err = Some(e);
                 if attempt < MAX_RETRIES {
-                    warn!(
-                        "capture_window failed (attempt {}), retrying...",
-                        attempt + 1
-                    );
+                    warn!("capture_window failed (attempt {}), retrying...", attempt + 1);
                     std::thread::sleep(std::time::Duration::from_millis(RETRY_DELAY_MS));
                 }
                 continue;
@@ -952,11 +904,7 @@ pub fn ocr_capture_and_parse(
                 });
             }
             let layout = detect_layout(&fast_blocks);
-            debug!(
-                "Fast OCR: {} blocks, layout: {:?}",
-                fast_blocks.len(),
-                layout
-            );
+            debug!("Fast OCR: {} blocks, layout: {:?}", fast_blocks.len(), layout);
             crop_image(&image, layout.watchlist_x)?
         };
         let blocks = recognize_text(&watchlist_crop)?;
@@ -965,11 +913,7 @@ pub fn ocr_capture_and_parse(
         // 分行 + 两行配对解析
         let rows = group_into_rows(&blocks);
         let quotes = parse_watchlist_from_ocr(&rows);
-        info!(
-            "OCR parsed {} quotes from {} rows",
-            quotes.len(),
-            rows.len()
-        );
+        info!("OCR parsed {} quotes from {} rows", quotes.len(), rows.len());
         return Ok(OcrResult {
             quotes,
             window_width: win.width,
@@ -979,8 +923,7 @@ pub fn ocr_capture_and_parse(
         });
     }
 
-    Err(last_err
-        .unwrap_or_else(|| anyhow::anyhow!("OCR capture failed after {} retries", MAX_RETRIES + 1)))
+    Err(last_err.unwrap_or_else(|| anyhow::anyhow!("OCR capture failed after {} retries", MAX_RETRIES + 1)))
 }
 
 // ---- 内部辅助函数 ----
@@ -1002,9 +945,8 @@ unsafe fn dict_get_string(dict: *const std::ffi::c_void, key: &str) -> Option<St
     }
 
     // CFString → Rust String
-    let cf_str: CFString = core_foundation::base::TCFType::wrap_under_get_rule(
-        value as core_foundation::string::CFStringRef,
-    );
+    let cf_str: CFString =
+        core_foundation::base::TCFType::wrap_under_get_rule(value as core_foundation::string::CFStringRef);
     Some(cf_str.to_string())
 }
 

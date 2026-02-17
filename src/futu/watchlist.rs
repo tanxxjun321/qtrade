@@ -6,8 +6,7 @@ use tracing::{debug, info, warn};
 use crate::models::{Market, StockCode, WatchlistEntry};
 
 /// 富途牛牛 App 本地数据基础路径
-const FUTU_BASE_PATH: &str =
-    "Library/Containers/cn.futu.Niuniu/Data/Library/Application Support";
+const FUTU_BASE_PATH: &str = "Library/Containers/cn.futu.Niuniu/Data/Library/Application Support";
 
 /// 自选股文件名
 const WATCHLIST_FILENAME: &str = "watchstockContainer.dat";
@@ -25,10 +24,7 @@ pub fn detect_futu_data_path() -> Result<PathBuf> {
     let base = PathBuf::from(&home).join(FUTU_BASE_PATH);
 
     if !base.exists() {
-        anyhow::bail!(
-            "富途牛牛数据目录不存在: {}\n请确认已安装富途牛牛 App",
-            base.display()
-        );
+        anyhow::bail!("富途牛牛数据目录不存在: {}\n请确认已安装富途牛牛 App", base.display());
     }
 
     Ok(base)
@@ -45,18 +41,14 @@ pub fn find_user_dir(base_path: &Path, user_id: Option<&str>) -> Result<PathBuf>
             info!("Using specified user directory: {}", uid);
             return Ok(dir);
         }
-        anyhow::bail!(
-            "指定的用户目录 {} 中未找到 {}",
-            uid,
-            WATCHLIST_FILENAME
-        );
+        anyhow::bail!("指定的用户目录 {} 中未找到 {}", uid, WATCHLIST_FILENAME);
     }
 
     // 自动扫描：找所有数字命名的目录
     let mut candidates: Vec<(PathBuf, std::time::SystemTime)> = Vec::new();
 
-    let entries = std::fs::read_dir(base_path)
-        .with_context(|| format!("Failed to read directory: {}", base_path.display()))?;
+    let entries =
+        std::fs::read_dir(base_path).with_context(|| format!("Failed to read directory: {}", base_path.display()))?;
 
     for entry in entries.flatten() {
         let path = entry.path();
@@ -80,10 +72,7 @@ pub fn find_user_dir(base_path: &Path, user_id: Option<&str>) -> Result<PathBuf>
                 .metadata()
                 .and_then(|m| m.modified())
                 .unwrap_or(std::time::UNIX_EPOCH);
-            debug!(
-                "Found watchlist in user dir: {} (modified: {:?})",
-                dir_name, modified
-            );
+            debug!("Found watchlist in user dir: {} (modified: {:?})", dir_name, modified);
             candidates.push((path, modified));
         }
     }
@@ -111,20 +100,16 @@ pub fn find_user_dir(base_path: &Path, user_id: Option<&str>) -> Result<PathBuf>
 pub fn read_watchlist(plist_path: &Path) -> Result<Vec<WatchlistEntry>> {
     info!("Reading watchlist from: {}", plist_path.display());
 
-    let content = std::fs::read(plist_path)
-        .with_context(|| format!("Failed to read plist file: {}", plist_path.display()))?;
+    let content =
+        std::fs::read(plist_path).with_context(|| format!("Failed to read plist file: {}", plist_path.display()))?;
 
-    let value: plist::Value = plist::from_bytes(&content)
-        .with_context(|| "Failed to parse plist data")?;
+    let value: plist::Value = plist::from_bytes(&content).with_context(|| "Failed to parse plist data")?;
 
     parse_watchlist_plist(&value)
 }
 
 /// 检测 plist 文件完整路径（供 mtime 监测用）
-pub fn detect_plist_path(
-    data_path: Option<&str>,
-    user_id: Option<&str>,
-) -> Result<PathBuf> {
+pub fn detect_plist_path(data_path: Option<&str>, user_id: Option<&str>) -> Result<PathBuf> {
     let base_path = match data_path {
         Some(p) => PathBuf::from(p),
         None => detect_futu_data_path()?,
@@ -144,10 +129,7 @@ pub fn load_watchlist_codes() -> Result<(PathBuf, Vec<StockCode>)> {
 }
 
 /// 一站式读取：自动检测路径 + 读取自选股 + 填充名称
-pub fn load_watchlist(
-    data_path: Option<&str>,
-    user_id: Option<&str>,
-) -> Result<Vec<WatchlistEntry>> {
+pub fn load_watchlist(data_path: Option<&str>, user_id: Option<&str>) -> Result<Vec<WatchlistEntry>> {
     let base_path = match data_path {
         Some(p) => PathBuf::from(p),
         None => detect_futu_data_path()?,
@@ -160,11 +142,13 @@ pub fn load_watchlist(
 
     // 从 StockDB 填充股票名称
     let db_path = base_path.join(STOCK_DB_PATH);
-    if let Some(names) = db_path.exists()
+    if let Some(names) = db_path
+        .exists()
         .then(|| load_stock_names(&db_path))
         .and_then(|r| r.map_err(|e| warn!("Failed to read StockDB: {}", e)).ok())
     {
-        let matched = entries.iter_mut()
+        let matched = entries
+            .iter_mut()
             .filter_map(|e| names.get(&e.stock_id).map(|n| e.name = n.clone()))
             .count();
         info!("Filled {} / {} stock names from StockDB", matched, entries.len());
@@ -248,10 +232,8 @@ fn parse_watchlist_plist(value: &plist::Value) -> Result<Vec<WatchlistEntry>> {
             _ => continue,
         };
 
-        let group_name = extract_string(group_dict, &["FLWatchGroupKeyName"])
-            .unwrap_or_default();
-        let group_id = extract_integer(group_dict, &["FLWatchGroupKeyID"])
-            .unwrap_or(0);
+        let group_name = extract_string(group_dict, &["FLWatchGroupKeyName"]).unwrap_or_default();
+        let group_id = extract_integer(group_dict, &["FLWatchGroupKeyID"]).unwrap_or(0);
 
         debug!("Found watchlist group: {} (ID={})", group_name, group_id);
 
@@ -259,11 +241,7 @@ fn parse_watchlist_plist(value: &plist::Value) -> Result<Vec<WatchlistEntry>> {
         if group_id == 1000 || group_name == "全部" {
             entries = parse_group_stocks(group_dict)?;
             all_group_found = true;
-            info!(
-                "Using '全部' group (ID={}): {} stocks",
-                group_id,
-                entries.len()
-            );
+            info!("Using '全部' group (ID={}): {} stocks", group_id, entries.len());
             break;
         }
     }
@@ -321,10 +299,7 @@ fn parse_group_stocks(group_dict: &plist::Dictionary) -> Result<Vec<WatchlistEnt
 /// - `FLStockKeyID`: 内部数字 ID（HK 股票用大数字，A 股用 1/2 前缀）
 /// - `FLStockKeyPriceHighPrecision`: 最新价（高精度整数）
 /// - `FLStockKeyLastClosePriceHighPrecision`: 昨收价（高精度整数）
-fn parse_futu_stock_entry(
-    dict: &plist::Dictionary,
-    sort_index: usize,
-) -> Option<WatchlistEntry> {
+fn parse_futu_stock_entry(dict: &plist::Dictionary, sort_index: usize) -> Option<WatchlistEntry> {
     // 优先用 FLStockKeyCode（直接的代码字符串）
     let code_str = extract_string(dict, &["FLStockKeyCode"])?;
 
@@ -335,21 +310,11 @@ fn parse_futu_stock_entry(
     let market = infer_market_from_id_and_code(stock_id, &code_str);
 
     // 提取价格
-    let price_raw = extract_integer(
-        dict,
-        &["FLStockKeyPriceHighPrecision"],
-    );
-    let prev_close_raw = extract_integer(
-        dict,
-        &["FLStockKeyLastClosePriceHighPrecision"],
-    );
+    let price_raw = extract_integer(dict, &["FLStockKeyPriceHighPrecision"]);
+    let prev_close_raw = extract_integer(dict, &["FLStockKeyLastClosePriceHighPrecision"]);
 
-    let cached_price = price_raw
-        .filter(|&p| p > 0)
-        .map(|p| p as f64 / PRICE_DIVISOR);
-    let _prev_close = prev_close_raw
-        .filter(|&p| p > 0)
-        .map(|p| p as f64 / PRICE_DIVISOR);
+    let cached_price = price_raw.filter(|&p| p > 0).map(|p| p as f64 / PRICE_DIVISOR);
+    let _prev_close = prev_close_raw.filter(|&p| p > 0).map(|p| p as f64 / PRICE_DIVISOR);
 
     debug!(
         "Stock: {} (ID={:?}, market={:?}, price={:?})",
@@ -554,25 +519,32 @@ mod tests {
         let mut stock1 = plist::Dictionary::new();
         stock1.insert("FLStockKeyCode".into(), plist::Value::String("00700".into()));
         stock1.insert("FLStockKeyID".into(), plist::Value::Integer(54047868453564_i64.into()));
-        stock1.insert("FLStockKeyPriceHighPrecision".into(), plist::Value::Integer(606000000000_i64.into()));
+        stock1.insert(
+            "FLStockKeyPriceHighPrecision".into(),
+            plist::Value::Integer(606000000000_i64.into()),
+        );
 
         let mut stock2 = plist::Dictionary::new();
         stock2.insert("FLStockKeyCode".into(), plist::Value::String("600519".into()));
         stock2.insert("FLStockKeyID".into(), plist::Value::Integer(1600519_i64.into()));
-        stock2.insert("FLStockKeyPriceHighPrecision".into(), plist::Value::Integer(1500000000000_i64.into()));
+        stock2.insert(
+            "FLStockKeyPriceHighPrecision".into(),
+            plist::Value::Integer(1500000000000_i64.into()),
+        );
 
         let mut group = plist::Dictionary::new();
         group.insert("FLWatchGroupKeyName".into(), plist::Value::String("全部".into()));
         group.insert("FLWatchGroupKeyID".into(), plist::Value::Integer(1000_i64.into()));
-        group.insert("FLWatchGroupKeyStocks".into(), plist::Value::Array(vec![
-            plist::Value::Dictionary(stock1),
-            plist::Value::Dictionary(stock2),
-        ]));
+        group.insert(
+            "FLWatchGroupKeyStocks".into(),
+            plist::Value::Array(vec![plist::Value::Dictionary(stock1), plist::Value::Dictionary(stock2)]),
+        );
 
         let mut root = plist::Dictionary::new();
-        root.insert("ReservedGroups".into(), plist::Value::Array(vec![
-            plist::Value::Dictionary(group),
-        ]));
+        root.insert(
+            "ReservedGroups".into(),
+            plist::Value::Array(vec![plist::Value::Dictionary(group)]),
+        );
 
         let entries = parse_watchlist_plist(&plist::Value::Dictionary(root)).unwrap();
         assert_eq!(entries.len(), 2);

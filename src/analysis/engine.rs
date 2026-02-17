@@ -6,9 +6,9 @@
 //! - 振幅突破：日内振幅超阈值
 //! - 量能突变：增量成交量相对窗口均值突增
 
-use std::collections::HashMap;
 use crate::config::AnalysisConfig;
 use crate::models::{QuoteSnapshot, Signal, StockCode};
+use std::collections::HashMap;
 
 /// 每只股票的价格历史窗口
 #[derive(Debug)]
@@ -207,8 +207,7 @@ impl AnalysisEngine {
             .vol_trackers
             .entry(quote.code.clone())
             .or_insert_with(|| VolumeTracker::new(baseline_secs, min_baseline_secs));
-        let ts_secs = quote.timestamp.timestamp() as f64
-            + quote.timestamp.timestamp_subsec_millis() as f64 / 1000.0;
+        let ts_secs = quote.timestamp.timestamp() as f64 + quote.timestamp.timestamp_subsec_millis() as f64 / 1000.0;
         vol_tracker.push(ts_secs, quote.volume);
 
         let ts = self.tick_states.entry(quote.code.clone()).or_default();
@@ -220,17 +219,19 @@ impl AnalysisEngine {
         }
 
         // 1. VWAP 偏离（指数的 turnover/volume 与指数点位不可比，跳过）
-        if !quote.code.is_index()
-            && quote.volume > 0 && quote.turnover > 0.0 && quote.last_price > 0.0
-        {
+        if !quote.code.is_index() && quote.volume > 0 && quote.turnover > 0.0 && quote.last_price > 0.0 {
             let vwap = quote.turnover / quote.volume as f64;
             let deviation = (quote.last_price - vwap) / vwap * 100.0;
 
             if deviation >= self.vwap_deviation_pct && !ts.vwap_above_triggered {
-                signals.push(Signal::VwapDeviation { deviation_pct: deviation });
+                signals.push(Signal::VwapDeviation {
+                    deviation_pct: deviation,
+                });
                 ts.vwap_above_triggered = true;
             } else if deviation <= -self.vwap_deviation_pct && !ts.vwap_below_triggered {
-                signals.push(Signal::VwapDeviation { deviation_pct: deviation });
+                signals.push(Signal::VwapDeviation {
+                    deviation_pct: deviation,
+                });
                 ts.vwap_below_triggered = true;
             }
 
@@ -246,8 +247,7 @@ impl AnalysisEngine {
         if prices.len() > self.rapid_move_window {
             // 第一层：价格停滞检查 — 当前价与上一快照一致则跳过
             let prev_price = prices[prices.len() - 2];
-            let is_stale = prev_price > 0.0
-                && ((quote.last_price - prev_price).abs() / prev_price * 100.0) < 0.01;
+            let is_stale = prev_price > 0.0 && ((quote.last_price - prev_price).abs() / prev_price * 100.0) < 0.01;
 
             if !is_stale {
                 let window_start = prices.len() - 1 - self.rapid_move_window;
@@ -298,25 +298,31 @@ impl AnalysisEngine {
 
         // 3. 振幅突破
         if quote.amplitude >= self.amplitude_breakout_pct && !ts.amplitude_triggered {
-            signals.push(Signal::AmplitudeBreakout { amplitude_pct: quote.amplitude });
+            signals.push(Signal::AmplitudeBreakout {
+                amplitude_pct: quote.amplitude,
+            });
             ts.amplitude_triggered = true;
         }
 
         // 4. 量能突变：时间归一化量速率 + 增量成交额门槛（指数跳过）
         if !quote.code.is_index() {
-        if let Some((ratio, delta)) = vol_tracker.compute_ratio() {
-            // 增量成交额门槛：delta × price >= volume_spike_turnover 万元
-            let turnover_ok = delta as f64 * quote.last_price >= self.volume_spike_turnover * 10000.0;
+            if let Some((ratio, delta)) = vol_tracker.compute_ratio() {
+                // 增量成交额门槛：delta × price >= volume_spike_turnover 万元
+                let turnover_ok = delta as f64 * quote.last_price >= self.volume_spike_turnover * 10000.0;
 
-            if ratio >= self.volume_spike_ratio && turnover_ok && !ts.volume_spike_triggered {
-                signals.push(Signal::VolumeSpike { ratio, price: quote.last_price, delta });
-                ts.volume_spike_triggered = true;
+                if ratio >= self.volume_spike_ratio && turnover_ok && !ts.volume_spike_triggered {
+                    signals.push(Signal::VolumeSpike {
+                        ratio,
+                        price: quote.last_price,
+                        delta,
+                    });
+                    ts.volume_spike_triggered = true;
+                }
+                // 滞后重置：回落到 1.5 倍以下
+                if ratio < 1.5 {
+                    ts.volume_spike_triggered = false;
+                }
             }
-            // 滞后重置：回落到 1.5 倍以下
-            if ratio < 1.5 {
-                ts.volume_spike_triggered = false;
-            }
-        }
         }
 
         signals
@@ -353,7 +359,7 @@ mod tests {
             volume_spike_ratio: 3.0,
             volume_baseline_secs: 300.0,
             volume_min_baseline_secs: 0.0, // 测试中关闭最短基线要求
-            volume_spike_turnover: 0.0, // 测试中关闭成交额门槛
+            volume_spike_turnover: 0.0,    // 测试中关闭成交额门槛
             tick_signal_display_minutes: 5,
             warmup_ticks: 0, // 测试中默认关闭预热
         }
@@ -399,7 +405,9 @@ mod tests {
         // 急涨
         let q = make_quote("00700", 102.0);
         let sigs = engine.process(&q);
-        assert!(sigs.iter().any(|s| matches!(s, Signal::RapidMove { change_pct } if *change_pct > 0.0)));
+        assert!(sigs
+            .iter()
+            .any(|s| matches!(s, Signal::RapidMove { change_pct } if *change_pct > 0.0)));
     }
 
     #[test]
@@ -442,13 +450,18 @@ mod tests {
 
         // 突然放量：3 秒内增加 5000 股（约 1667 股/秒，5x 基线）→ 触发
         let sigs = engine.process(&make_timed(12, 9000));
-        assert!(sigs.iter().any(|s| matches!(s, Signal::VolumeSpike { ratio, .. } if *ratio >= 3.0)),
-            "should trigger volume spike on 5x burst");
+        assert!(
+            sigs.iter()
+                .any(|s| matches!(s, Signal::VolumeSpike { ratio, .. } if *ratio >= 3.0)),
+            "should trigger volume spike on 5x burst"
+        );
 
         // 已触发，不重复
         let sigs = engine.process(&make_timed(15, 14000));
-        assert!(sigs.iter().all(|s| !matches!(s, Signal::VolumeSpike { .. })),
-            "should not repeat while triggered");
+        assert!(
+            sigs.iter().all(|s| !matches!(s, Signal::VolumeSpike { .. })),
+            "should not repeat while triggered"
+        );
     }
 
     #[test]
@@ -486,13 +499,18 @@ mod tests {
         // prices=[100.0, 100.0, 102.0], prev=100.0, cur=102.0 → not stale
         // old=100.0, net=2%, eff: path=|100-100|+|102-100|=2, eff=2/2=1.0
         let sigs = engine.process(&make_quote("00700", 102.0));
-        assert!(sigs.iter().any(|s| matches!(s, Signal::RapidMove { change_pct } if *change_pct > 0.0)),
-            "should trigger rapid move up");
+        assert!(
+            sigs.iter()
+                .any(|s| matches!(s, Signal::RapidMove { change_pct } if *change_pct > 0.0)),
+            "should trigger rapid move up"
+        );
 
         // 继续上涨 — 已触发不重复
         let sigs = engine.process(&make_quote("00700", 103.0));
-        assert!(sigs.iter().all(|s| !matches!(s, Signal::RapidMove { .. })),
-            "should not repeat while up_triggered");
+        assert!(
+            sigs.iter().all(|s| !matches!(s, Signal::RapidMove { .. })),
+            "should not repeat while up_triggered"
+        );
 
         // 价格稳定在高位，窗口 change_pct 回落
         // prices=[103.0, 103.2, 103.2]: old=103.0, change=0.19% < reset(0.5%) → reset
@@ -507,8 +525,11 @@ mod tests {
         // 再次急涨
         // prices=[103.2, 103.3, 105.0]: old=103.2, change=1.74%, eff: path=0.1+1.7=1.8, net=1.8, eff=1.0
         let sigs = engine.process(&make_quote("00700", 105.0));
-        assert!(sigs.iter().any(|s| matches!(s, Signal::RapidMove { change_pct } if *change_pct > 0.0)),
-            "should re-trigger after reset");
+        assert!(
+            sigs.iter()
+                .any(|s| matches!(s, Signal::RapidMove { change_pct } if *change_pct > 0.0)),
+            "should re-trigger after reset"
+        );
     }
 
     #[test]
@@ -572,7 +593,9 @@ mod tests {
         // 单向下跌触发：窗口 [100.0, 99.8, 99.6, 98.5]
         // net = (98.5-100.0)/100.0 = -1.5%, efficiency = 1.0 → 触发
         let sigs = engine.process(&make_quote("00700", 98.5));
-        assert!(sigs.iter().any(|s| matches!(s, Signal::RapidMove { change_pct } if *change_pct < 0.0)));
+        assert!(sigs
+            .iter()
+            .any(|s| matches!(s, Signal::RapidMove { change_pct } if *change_pct < 0.0)));
 
         // 已触发，继续下跌不重复
         let sigs = engine.process(&make_quote("00700", 97.5));
@@ -595,13 +618,17 @@ mod tests {
         }
         // +$0.01 = +5%，但绝对变动 $0.01 < $0.05 → 拒绝
         let sigs = engine.process(&make_quote("00700", 0.21));
-        assert!(sigs.iter().all(|s| !matches!(s, Signal::RapidMove { .. })),
-            "low-price $0.01 move should be rejected by min_change");
+        assert!(
+            sigs.iter().all(|s| !matches!(s, Signal::RapidMove { .. })),
+            "low-price $0.01 move should be rejected by min_change"
+        );
 
         // +$0.06 = +30%，绝对变动 $0.06 >= $0.05 → 通过
         let sigs = engine.process(&make_quote("00700", 0.27));
-        assert!(sigs.iter().any(|s| matches!(s, Signal::RapidMove { .. })),
-            "low-price $0.06 move should pass min_change");
+        assert!(
+            sigs.iter().any(|s| matches!(s, Signal::RapidMove { .. })),
+            "low-price $0.06 move should pass min_change"
+        );
     }
 
     #[test]
@@ -660,8 +687,10 @@ mod tests {
         q.volume = (rate * 17.0) as u64; // 12s→17s, delta=5000 in 5s = 1000/s
         q.timestamp = base_time + chrono::Duration::seconds(17);
         let sigs = engine.process(&q);
-        assert!(sigs.iter().all(|s| !matches!(s, Signal::VolumeSpike { .. })),
-            "time-normalized rate ~1x should not trigger spike");
+        assert!(
+            sigs.iter().all(|s| !matches!(s, Signal::VolumeSpike { .. })),
+            "time-normalized rate ~1x should not trigger spike"
+        );
     }
 
     #[test]
@@ -689,8 +718,10 @@ mod tests {
         q.volume = 90; // delta=50 in 3s
         q.timestamp = base_time + chrono::Duration::seconds(15);
         let sigs = engine.process(&q);
-        assert!(sigs.iter().all(|s| !matches!(s, Signal::VolumeSpike { .. })),
-            "turnover below threshold should not trigger");
+        assert!(
+            sigs.iter().all(|s| !matches!(s, Signal::VolumeSpike { .. })),
+            "turnover below threshold should not trigger"
+        );
     }
 
     #[test]
@@ -719,8 +750,10 @@ mod tests {
         q.volume = (rate * 12.0 + rate * 3.0 * 5.0) as u64;
         q.timestamp = base_time + chrono::Duration::seconds(15);
         let sigs = engine.process(&q);
-        assert!(sigs.iter().any(|s| matches!(s, Signal::VolumeSpike { .. })),
-            "5x spike should trigger");
+        assert!(
+            sigs.iter().any(|s| matches!(s, Signal::VolumeSpike { .. })),
+            "5x spike should trigger"
+        );
 
         // 回落到正常量（ratio < 1.5 → reset）
         let prev_vol = q.volume;
@@ -734,8 +767,10 @@ mod tests {
         q3.volume = q2.volume + (rate * 3.0 * 5.0) as u64;
         q3.timestamp = base_time + chrono::Duration::seconds(21);
         let sigs = engine.process(&q3);
-        assert!(sigs.iter().any(|s| matches!(s, Signal::VolumeSpike { .. })),
-            "should re-trigger after hysteresis reset");
+        assert!(
+            sigs.iter().any(|s| matches!(s, Signal::VolumeSpike { .. })),
+            "should re-trigger after hysteresis reset"
+        );
     }
 
     #[test]

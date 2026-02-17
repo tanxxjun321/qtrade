@@ -61,10 +61,7 @@ impl AlertManager {
     }
 
     /// 评估所有规则（穿越检测：仅在 change_pct 跨越阈值时触发）
-    pub async fn evaluate(
-        &mut self,
-        quote: &QuoteSnapshot,
-    ) -> Vec<AlertEvent> {
+    pub async fn evaluate(&mut self, quote: &QuoteSnapshot) -> Vec<AlertEvent> {
         if !self.enabled {
             return Vec::new();
         }
@@ -92,10 +89,7 @@ impl AlertManager {
                 };
 
                 if was_triggered {
-                    debug!(
-                        "Alert already active for {} / {}, skipping",
-                        quote.code, rule.name()
-                    );
+                    debug!("Alert already active for {} / {}, skipping", quote.code, rule.name());
                     continue;
                 }
 
@@ -107,10 +101,7 @@ impl AlertManager {
                 };
                 let fire_key = (quote.code.clone(), format!("{}_{}", rule.name(), direction));
                 if self.fired_today.get(&fire_key) == Some(&today) {
-                    debug!(
-                        "日内已报过 {} / {}，跳过",
-                        quote.code, fire_key.1
-                    );
+                    debug!("日内已报过 {} / {}，跳过", quote.code, fire_key.1);
                     continue;
                 }
 

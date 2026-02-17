@@ -65,9 +65,7 @@ impl Notifier {
             title.replace('"', r#"\""#),
         );
 
-        let _ = std::process::Command::new("osascript")
-            .args(["-e", &script])
-            .spawn();
+        let _ = std::process::Command::new("osascript").args(["-e", &script]).spawn();
     }
 
     /// Webhook 通知（支持飞书/Slack 格式）

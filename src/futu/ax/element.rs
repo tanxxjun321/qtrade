@@ -42,13 +42,8 @@ impl Element {
         let attr_name = CFString::new(name);
         let mut value: CFTypeRef = std::ptr::null();
 
-        let result = unsafe {
-            AXUIElementCopyAttributeValue(
-                self.inner.as_ptr(),
-                attr_name.as_concrete_TypeRef(),
-                &mut value,
-            )
-        };
+        let result =
+            unsafe { AXUIElementCopyAttributeValue(self.inner.as_ptr(), attr_name.as_concrete_TypeRef(), &mut value) };
 
         if result != AX_ERROR_SUCCESS {
             return Err(AxError::from_code(result));
@@ -172,9 +167,9 @@ impl Element {
             }
         };
 
-        let (x, y) = ax_value.as_point().ok_or(AxError::FrameParseFailed(
-            "无法解析 AXPosition".to_string(),
-        ))?;
+        let (x, y) = ax_value
+            .as_point()
+            .ok_or(AxError::FrameParseFailed("无法解析 AXPosition".to_string()))?;
 
         // 获取大小
         let size = self.attribute("AXSize")?;
@@ -188,9 +183,9 @@ impl Element {
             }
         };
 
-        let (width, height) = ax_value.as_size().ok_or(AxError::FrameParseFailed(
-            "无法解析 AXSize".to_string(),
-        ))?;
+        let (width, height) = ax_value
+            .as_size()
+            .ok_or(AxError::FrameParseFailed("无法解析 AXSize".to_string()))?;
 
         Ok(Rect::new(x, y, width, height))
     }
@@ -199,9 +194,9 @@ impl Element {
     pub fn position(&self) -> AxResult<(f64, f64)> {
         let pos = self.attribute("AXPosition")?;
         match pos {
-            CfType::Value(v) => v.as_point().ok_or(AxError::FrameParseFailed(
-                "无法解析 AXPosition".to_string(),
-            )),
+            CfType::Value(v) => v
+                .as_point()
+                .ok_or(AxError::FrameParseFailed("无法解析 AXPosition".to_string())),
             _ => Err(AxError::TypeMismatch {
                 expected: "AXValue".to_string(),
                 actual: "other".to_string(),
@@ -213,9 +208,9 @@ impl Element {
     pub fn size(&self) -> AxResult<(f64, f64)> {
         let size = self.attribute("AXSize")?;
         match size {
-            CfType::Value(v) => v.as_size().ok_or(AxError::FrameParseFailed(
-                "无法解析 AXSize".to_string(),
-            )),
+            CfType::Value(v) => v
+                .as_size()
+                .ok_or(AxError::FrameParseFailed("无法解析 AXSize".to_string())),
             _ => Err(AxError::TypeMismatch {
                 expected: "AXValue".to_string(),
                 actual: "other".to_string(),
@@ -276,9 +271,7 @@ impl Element {
     /// 执行操作
     pub fn perform_action(&self, action: &str) -> AxResult<()> {
         let action_name = CFString::new(action);
-        let result = unsafe {
-            AXUIElementPerformAction(self.inner.as_ptr(), action_name.as_concrete_TypeRef())
-        };
+        let result = unsafe { AXUIElementPerformAction(self.inner.as_ptr(), action_name.as_concrete_TypeRef()) };
 
         if result != AX_ERROR_SUCCESS {
             return Err(AxError::from_code(result));
@@ -463,13 +456,8 @@ impl Element {
         results
     }
 
-    fn find_all_recursive<F>(
-        &self,
-        predicate: &F,
-        depth: usize,
-        max_depth: usize,
-        results: &mut Vec<Element>,
-    ) where
+    fn find_all_recursive<F>(&self, predicate: &F, depth: usize, max_depth: usize, results: &mut Vec<Element>)
+    where
         F: Fn(&Element) -> bool,
     {
         if depth > max_depth {

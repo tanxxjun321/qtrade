@@ -77,10 +77,7 @@ impl QtradeMcpServer {
     #[tool(
         description = "买入委托。支持港股（5位代码如00700）和A股（6位代码如600519）。自动识别市场，通过财富通客户端提交限价买入订单。提交前会验证确认弹窗中的价格和代码。"
     )]
-    async fn buy(
-        &self,
-        Parameters(params): Parameters<BuyParams>,
-    ) -> Result<CallToolResult, McpError> {
+    async fn buy(&self, Parameters(params): Parameters<BuyParams>) -> Result<CallToolResult, McpError> {
         let market = TradingMarket::infer(&params.stock_code).ok_or_else(|| {
             McpError::invalid_params(
                 format!(
@@ -119,10 +116,7 @@ impl QtradeMcpServer {
     #[tool(
         description = "卖出委托。支持港股（5位代码如00700）和A股（6位代码如600519）。自动识别市场，通过财富通客户端提交限价卖出订单。提交前会验证确认弹窗中的价格和代码。"
     )]
-    async fn sell(
-        &self,
-        Parameters(params): Parameters<SellParams>,
-    ) -> Result<CallToolResult, McpError> {
+    async fn sell(&self, Parameters(params): Parameters<SellParams>) -> Result<CallToolResult, McpError> {
         let market = TradingMarket::infer(&params.stock_code).ok_or_else(|| {
             McpError::invalid_params(
                 format!(
@@ -158,13 +152,8 @@ impl QtradeMcpServer {
         }
     }
 
-    #[tool(
-        description = "获取股票当前行情快照（只读）。返回最新价、涨跌幅等信息。可用于下单前确认价格。"
-    )]
-    async fn get_quote(
-        &self,
-        Parameters(params): Parameters<GetQuoteParams>,
-    ) -> Result<CallToolResult, McpError> {
+    #[tool(description = "获取股票当前行情快照（只读）。返回最新价、涨跌幅等信息。可用于下单前确认价格。")]
+    async fn get_quote(&self, Parameters(params): Parameters<GetQuoteParams>) -> Result<CallToolResult, McpError> {
         let code = params.stock_code.clone();
         let result = tokio::task::spawn_blocking(move || get_quote_sync(&code))
             .await
@@ -222,9 +211,10 @@ fn get_quote_sync(stock_code: &str) -> anyhow::Result<String> {
     }
 
     // Find the main window (standard window, not dialog)
-    let window = windows.into_iter().find(|w| {
-        w.subrole().as_deref() != Some("AXDialog")
-    }).ok_or_else(|| anyhow::anyhow!("未找到主窗口"))?;
+    let window = windows
+        .into_iter()
+        .find(|w| w.subrole().as_deref() != Some("AXDialog"))
+        .ok_or_else(|| anyhow::anyhow!("未找到主窗口"))?;
 
     let elements = action::find_all_elements_with_matcher(
         &window,
@@ -271,22 +261,21 @@ pub async fn run_mcp_server(config: &McpConfig) -> anyhow::Result<()> {
         },
     );
 
-    let router =
-        axum::Router::new()
-            .nest_service("/mcp", service)
-            .layer(axum::middleware::from_fn(
-                |req: axum::extract::Request, next: axum::middleware::Next| async move {
-                    debug!(
-                        method = %req.method(),
-                        uri = %req.uri(),
-                        headers = ?req.headers(),
-                        "MCP 收到请求"
-                    );
-                    let resp = next.run(req).await;
-                    debug!(status = %resp.status(), "MCP 响应");
-                    resp
-                },
-            ));
+    let router = axum::Router::new()
+        .nest_service("/mcp", service)
+        .layer(axum::middleware::from_fn(
+            |req: axum::extract::Request, next: axum::middleware::Next| async move {
+                debug!(
+                    method = %req.method(),
+                    uri = %req.uri(),
+                    headers = ?req.headers(),
+                    "MCP 收到请求"
+                );
+                let resp = next.run(req).await;
+                debug!(status = %resp.status(), "MCP 响应");
+                resp
+            },
+        ));
 
     let bind_addr = format!("{}:{}", config.host, config.port);
     let listener = tokio::net::TcpListener::bind(&bind_addr).await?;

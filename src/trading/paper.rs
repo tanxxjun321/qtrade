@@ -41,13 +41,7 @@ impl PaperTradingEngine {
     }
 
     /// 下单（预留）
-    pub fn place_order(
-        &mut self,
-        _code: &StockCode,
-        _side: Side,
-        _quantity: u64,
-        _price: f64,
-    ) -> Result<()> {
+    pub fn place_order(&mut self, _code: &StockCode, _side: Side, _quantity: u64, _price: f64) -> Result<()> {
         // TODO: 实现模拟交易逻辑
         anyhow::bail!("Paper trading not yet implemented")
     }
@@ -64,11 +58,6 @@ impl PaperTradingEngine {
 
     /// 总资产
     pub fn total_equity(&self) -> f64 {
-        self.available_cash
-            + self
-                .positions
-                .values()
-                .map(|p| p.market_value)
-                .sum::<f64>()
+        self.available_cash + self.positions.values().map(|p| p.market_value).sum::<f64>()
     }
 }

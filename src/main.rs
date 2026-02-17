@@ -87,8 +87,7 @@ async fn main() -> Result<()> {
     let is_tui = matches!(command, Commands::Start);
     if is_tui {
         // TUI 模式：日志写文件，避免干扰终端界面
-        let log_file = std::fs::File::create("qtrade.log")
-            .expect("Failed to create qtrade.log");
+        let log_file = std::fs::File::create("qtrade.log").expect("Failed to create qtrade.log");
         tracing_subscriber::fmt()
             .with_env_filter(env_filter)
             .with_writer(log_file)
@@ -96,9 +95,7 @@ async fn main() -> Result<()> {
             .init();
     } else {
         // CLI 模式：日志输出到终端
-        tracing_subscriber::fmt()
-            .with_env_filter(env_filter)
-            .init();
+        tracing_subscriber::fmt().with_env_filter(env_filter).init();
     }
 
     match command {
@@ -108,25 +105,17 @@ async fn main() -> Result<()> {
         Commands::TestApi => cmd_test_api(config).await,
         Commands::TestOcr => cmd_test_ocr(config).await,
         Commands::McpServer => cmd_mcp_server(config).await,
-        Commands::TestTrade { code, price, qty, side } => {
-            cmd_test_trade(code, price, qty, side).await
-        }
+        Commands::TestTrade { code, price, qty, side } => cmd_test_trade(code, price, qty, side).await,
     }
 }
 
 /// 显示自选股列表
 fn cmd_watchlist(config: AppConfig) -> Result<()> {
-    let entries = futu::watchlist::load_watchlist(
-        config.futu.data_path.as_deref(),
-        config.futu.user_id.as_deref(),
-    )?;
+    let entries = futu::watchlist::load_watchlist(config.futu.data_path.as_deref(), config.futu.user_id.as_deref())?;
 
     println!("自选股列表 ({} 只):", entries.len());
     println!("{:-<70}", "");
-    println!(
-        "{:<4} {:<14} {:<12} {}",
-        "#", "代码", "名称", "缓存价格"
-    );
+    println!("{:<4} {:<14} {:<12} {}", "#", "代码", "名称", "缓存价格");
     println!("{:-<70}", "");
 
     for (i, entry) in entries.iter().enumerate() {
@@ -175,10 +164,7 @@ fn cmd_debug(_config: AppConfig) -> Result<()> {
 fn filter_stock_codes(watchlist: &[models::WatchlistEntry]) -> Vec<StockCode> {
     watchlist
         .iter()
-        .filter(|e| {
-            !e.code.code.starts_with("800")
-                && e.code.market != crate::models::Market::Unknown
-        })
+        .filter(|e| !e.code.code.starts_with("800") && e.code.market != crate::models::Market::Unknown)
         .map(|e| e.code.clone())
         .collect()
 }
@@ -188,10 +174,7 @@ async fn cmd_start(config: AppConfig) -> Result<()> {
     info!("qtrade 量化盯盘系统启动");
 
     // 读取自选股
-    let watchlist = futu::watchlist::load_watchlist(
-        config.futu.data_path.as_deref(),
-        config.futu.user_id.as_deref(),
-    )?;
+    let watchlist = futu::watchlist::load_watchlist(config.futu.data_path.as_deref(), config.futu.user_id.as_deref())?;
 
     if watchlist.is_empty() {
         anyhow::bail!("自选股列表为空");
@@ -203,10 +186,8 @@ async fn cmd_start(config: AppConfig) -> Result<()> {
     info!("可订阅股票: {} 只（已过滤内部索引代码）", stock_codes.len());
 
     // 检测 plist 路径（用于 mtime 监测）
-    let plist_path = futu::watchlist::detect_plist_path(
-        config.futu.data_path.as_deref(),
-        config.futu.user_id.as_deref(),
-    )?;
+    let plist_path =
+        futu::watchlist::detect_plist_path(config.futu.data_path.as_deref(), config.futu.user_id.as_deref())?;
     info!("Plist path for monitoring: {}", plist_path.display());
 
     // 创建 watch channel 广播 watchlist 变化
@@ -221,7 +202,9 @@ async fn cmd_start(config: AppConfig) -> Result<()> {
             info!("数据源 [{}] 连接成功", provider.name());
             // 订阅行情
             match provider.subscribe(&stock_codes).await {
-                Ok(()) => info!("已订阅 {} 只股票的实时行情", stock_codes.len()),
+                Ok(()) => {
+                    info!("已订阅 {} 只股票的实时行情", stock_codes.len())
+                }
                 Err(e) => warn!("订阅行情失败: {}", e),
             }
         }
@@ -283,10 +266,8 @@ async fn cmd_start(config: AppConfig) -> Result<()> {
             if de.stock_count() > 0 {
                 state.daily_indicators = de.get_indicators().clone();
                 state.daily_signals = de.get_signals().clone();
-                let sig_count: usize =
-                    state.daily_signals.values().map(|v| v.len()).sum();
-                state.daily_kline_status =
-                    format!("日K:{}只 信号:{} (缓存)", de.stock_count(), sig_count);
+                let sig_count: usize = state.daily_signals.values().map(|v| v.len()).sum();
+                state.daily_kline_status = format!("日K:{}只 信号:{} (缓存)", de.stock_count(), sig_count);
 
                 // 从缓存计算 ADV 并注入 tick 引擎
                 let adv = de.compute_adv();
@@ -351,11 +332,7 @@ async fn cmd_start(config: AppConfig) -> Result<()> {
                 continue;
             }
 
-            info!(
-                "Watchlist changed: +{} added, -{} removed",
-                added.len(),
-                removed.len()
-            );
+            info!("Watchlist changed: +{} added, -{} removed", added.len(), removed.len());
 
             // 处理删除
             if !removed.is_empty() {
@@ -388,10 +365,7 @@ async fn cmd_start(config: AppConfig) -> Result<()> {
             {
                 let filtered_entries: Vec<_> = new_watchlist
                     .iter()
-                    .filter(|e| {
-                        !e.code.code.starts_with("800")
-                            && e.code.market != crate::models::Market::Unknown
-                    })
+                    .filter(|e| !e.code.code.starts_with("800") && e.code.market != crate::models::Market::Unknown)
                     .cloned()
                     .collect();
                 let mut state = monitor_dash.lock().await;
@@ -590,10 +564,8 @@ async fn cmd_start(config: AppConfig) -> Result<()> {
             // 更新仪表盘状态
             let mut state = dash_clone.lock().await;
             // 放量信号 → 写入 recent_alerts（需在 update_quotes 消费 quotes 前建名称映射）
-            let name_map: std::collections::HashMap<StockCode, String> = quotes
-                .iter()
-                .map(|q| (q.code.clone(), q.name.clone()))
-                .collect();
+            let name_map: std::collections::HashMap<StockCode, String> =
+                quotes.iter().map(|q| (q.code.clone(), q.name.clone())).collect();
             state.update_quotes(quotes);
             for (code, sigs) in &all_new_signals {
                 for sig in sigs {
@@ -609,7 +581,10 @@ async fn cmd_start(config: AppConfig) -> Result<()> {
                             rule_name: "放量".to_string(),
                             message: format!(
                                 "{} 放量{:.0}x 价:{:.2} 量:{:.1}万",
-                                name, ratio, price, *delta as f64 / 10000.0
+                                name,
+                                ratio,
+                                price,
+                                *delta as f64 / 10000.0
                             ),
                             triggered_at: now,
                             severity: crate::models::AlertSeverity::Warning,
@@ -678,10 +653,7 @@ async fn cmd_test_api(config: AppConfig) -> Result<()> {
     use crate::futu::openapi::OpenApiClient;
 
     println!("测试 FutuOpenD 连接...");
-    println!(
-        "目标: {}:{}",
-        config.futu.opend_host, config.futu.opend_port
-    );
+    println!("目标: {}:{}", config.futu.opend_host, config.futu.opend_port);
 
     let mut client = OpenApiClient::new(&config.futu.opend_host, config.futu.opend_port);
 
@@ -690,10 +662,7 @@ async fn cmd_test_api(config: AppConfig) -> Result<()> {
     println!("✓ 连接成功");
 
     // 读取自选股列表
-    let watchlist = futu::watchlist::load_watchlist(
-        config.futu.data_path.as_deref(),
-        config.futu.user_id.as_deref(),
-    )?;
+    let watchlist = futu::watchlist::load_watchlist(config.futu.data_path.as_deref(), config.futu.user_id.as_deref())?;
 
     if watchlist.is_empty() {
         println!("自选股列表为空");
@@ -703,18 +672,12 @@ async fn cmd_test_api(config: AppConfig) -> Result<()> {
     // 只取前 5 只港股测试（排除 A 股指数和 800xxx 内部代码）
     let test_stocks: Vec<StockCode> = watchlist
         .iter()
-        .filter(|e| {
-            e.code.market == crate::models::Market::HK
-                && !e.code.code.starts_with("800")
-        })
+        .filter(|e| e.code.market == crate::models::Market::HK && !e.code.code.starts_with("800"))
         .take(5)
         .map(|e| e.code.clone())
         .collect();
 
-    println!(
-        "\n请求 {} 只股票的实时行情...",
-        test_stocks.len()
-    );
+    println!("\n请求 {} 只股票的实时行情...", test_stocks.len());
     for s in &test_stocks {
         println!("  {}", s.display_code());
     }
@@ -725,10 +688,8 @@ async fn cmd_test_api(config: AppConfig) -> Result<()> {
     println!("✓ 订阅成功");
 
     // 构建中文名映射
-    let name_map: std::collections::HashMap<&StockCode, &str> = watchlist
-        .iter()
-        .map(|e| (&e.code, e.name.as_str()))
-        .collect();
+    let name_map: std::collections::HashMap<&StockCode, &str> =
+        watchlist.iter().map(|e| (&e.code, e.name.as_str())).collect();
 
     // 获取行情
     match client.get_basic_quotes(&test_stocks).await {
@@ -847,11 +808,7 @@ async fn cmd_test_ocr(_config: AppConfig) -> Result<()> {
                 layout.watchlist_x.1 * 100.0
             );
             if let Some((ql, qr)) = layout.quote_x {
-                println!(
-                    "  报价详情区域: x = {:.1}% ~ {:.1}%",
-                    ql * 100.0,
-                    qr * 100.0
-                );
+                println!("  报价详情区域: x = {:.1}% ~ {:.1}%", ql * 100.0, qr * 100.0);
             } else {
                 println!("  报价详情区域: 未检测到");
             }
@@ -903,7 +860,9 @@ async fn cmd_test_ocr(_config: AppConfig) -> Result<()> {
         let session_label = session.extended_label();
         for q in &quotes {
             let ext_info = match (q.extended_price, q.extended_change_pct) {
-                (Some(ep), Some(epc)) => format!("  {}:{:.3} {:>+.2}%", session_label, ep, epc),
+                (Some(ep), Some(epc)) => {
+                    format!("  {}:{:.3} {:>+.2}%", session_label, ep, epc)
+                }
                 (Some(ep), None) => format!("  {}:{:.3}", session_label, ep),
                 _ => String::new(),
             };
@@ -919,11 +878,7 @@ async fn cmd_test_ocr(_config: AppConfig) -> Result<()> {
         }
 
         if grid_frame.is_some() {
-            println!(
-                "\n共解析 {} 条行情 (AX跳过Pass1 + Accurate {}ms)",
-                quotes.len(),
-                acc_ms,
-            );
+            println!("\n共解析 {} 条行情 (AX跳过Pass1 + Accurate {}ms)", quotes.len(), acc_ms,);
         } else {
             println!(
                 "\n共解析 {} 条行情 (Fast {}ms + Accurate {}ms)",
@@ -953,12 +908,19 @@ async fn cmd_test_trade(code: String, price: f64, qty: u32, side: String) -> Res
         other => anyhow::bail!("无效的 side: {:?}，请使用 buy 或 sell", other),
     };
 
-    let market = TradingMarket::infer(&code)
-        .ok_or_else(|| anyhow::anyhow!("无法识别股票代码 '{}' 的市场", code))?;
+    let market = TradingMarket::infer(&code).ok_or_else(|| anyhow::anyhow!("无法识别股票代码 '{}' 的市场", code))?;
 
     let prec = market.price_decimals();
     println!("=== 交易测试 ===");
-    println!("市场: {}  股票: {}  价格: {:.prec$}  数量: {}  方向: {}", market, code, price, qty, side, prec = prec);
+    println!(
+        "市场: {}  股票: {}  价格: {:.prec$}  数量: {}  方向: {}",
+        market,
+        code,
+        price,
+        qty,
+        side,
+        prec = prec
+    );
     println!();
 
     let executor = TradingExecutor::new()?;
@@ -1025,10 +987,7 @@ async fn probe_market_permissions(
             continue;
         }
         probed.insert(stock.market);
-        match client
-            .request_history_kline(stock, &probe_begin, &today_str, 2)
-            .await
-        {
+        match client.request_history_kline(stock, &probe_begin, &today_str, 2).await {
             Ok(_) => {
                 info!("市场权限检测: {} ✓", stock.market);
             }
@@ -1047,10 +1006,7 @@ async fn probe_market_permissions(
 
     if !no_permission.is_empty() {
         let skipped: Vec<String> = no_permission.iter().map(|m| format!("{}", m)).collect();
-        info!(
-            "以下市场无权限，将跳过日K拉取: {}",
-            skipped.join(", ")
-        );
+        info!("以下市场无权限，将跳过日K拉取: {}", skipped.join(", "));
     }
 
     no_permission
@@ -1092,9 +1048,7 @@ async fn fetch_and_merge_stock_kline(
         .format("%Y-%m-%d")
         .to_string();
 
-    let klines = client
-        .request_history_kline(stock, &begin, &end, fetch_days)
-        .await?;
+    let klines = client.request_history_kline(stock, &begin, &end, fetch_days).await?;
 
     if klines.is_empty() {
         return Ok(false);
@@ -1148,8 +1102,7 @@ async fn run_daily_kline_cycle(
     let mut client = crate::futu::openapi::OpenApiClient::new(futu_host, futu_port);
     match client.connect().await {
         Ok(()) => {
-            let mut no_permission_markets =
-                probe_market_permissions(&mut client, daily_codes).await;
+            let mut no_permission_markets = probe_market_permissions(&mut client, daily_codes).await;
             let today_str = chrono::Local::now().format("%Y-%m-%d").to_string();
 
             let mut fetched = 0u32;
@@ -1158,15 +1111,7 @@ async fn run_daily_kline_cycle(
                     continue;
                 }
 
-                match fetch_and_merge_stock_kline(
-                    &mut client,
-                    stock,
-                    daily_engine,
-                    &today_str,
-                    daily_days,
-                )
-                .await
-                {
+                match fetch_and_merge_stock_kline(&mut client, stock, daily_engine, &today_str, daily_days).await {
                     Ok(true) => fetched += 1,
                     Ok(false) => {}
                     Err(e) => {
@@ -1175,11 +1120,7 @@ async fn run_daily_kline_cycle(
                             warn!("{} market no permission, skipping: {}", stock.market, msg);
                             no_permission_markets.insert(stock.market);
                         } else {
-                            warn!(
-                                "Failed to get klines for {}: {}",
-                                stock.display_code(),
-                                msg
-                            );
+                            warn!("Failed to get klines for {}: {}", stock.display_code(), msg);
                         }
                     }
                 }
@@ -1212,8 +1153,7 @@ async fn run_daily_kline_cycle(
                 state.daily_indicators = de.get_indicators().clone();
                 state.daily_signals = de.get_signals().clone();
                 let sig_count: usize = state.daily_signals.values().map(|v| v.len()).sum();
-                state.daily_kline_status =
-                    format!("日K:{}只 信号:{}", de.stock_count(), sig_count);
+                state.daily_kline_status = format!("日K:{}只 信号:{}", de.stock_count(), sig_count);
 
                 // 计算 ADV 并注入 tick 引擎（放量绝对量门槛）
                 let adv = de.compute_adv();
@@ -1268,7 +1208,11 @@ fn save_cgimage_png(image: &objc2_core_foundation::CFRetained<objc2_core_graphic
     }
 
     let path_str = path.to_string_lossy().to_string();
-    let url = CFURL::from_file_system_path(CFString::new(&path_str), core_foundation::url::kCFURLPOSIXPathStyle, false);
+    let url = CFURL::from_file_system_path(
+        CFString::new(&path_str),
+        core_foundation::url::kCFURLPOSIXPathStyle,
+        false,
+    );
     let png_type = CFString::new("public.png");
 
     unsafe {

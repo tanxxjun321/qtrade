@@ -110,32 +110,30 @@ impl Application {
     /// 隐藏应用
     pub fn hide(&self) -> AxResult<()> {
         // macOS AX API 没有直接隐藏的方法，使用 AppleScript
-        let script = format!(r#"tell application "System Events" to set visible of (processes whose unix id is {}) to false"#, self.pid);
-        let output = Command::new("osascript")
-            .args(["-e", &script])
-            .output();
-        
+        let script = format!(
+            r#"tell application "System Events" to set visible of (processes whose unix id is {}) to false"#,
+            self.pid
+        );
+        let output = Command::new("osascript").args(["-e", &script]).output();
+
         match output {
             Ok(result) if result.status.success() => Ok(()),
-            Ok(result) => Err(AxError::Other(
-                String::from_utf8_lossy(&result.stderr).to_string()
-            )),
+            Ok(result) => Err(AxError::Other(String::from_utf8_lossy(&result.stderr).to_string())),
             Err(e) => Err(AxError::Other(e.to_string())),
         }
     }
 
     /// 显示应用
     pub fn show(&self) -> AxResult<()> {
-        let script = format!(r#"tell application "System Events" to set visible of (processes whose unix id is {}) to true"#, self.pid);
-        let output = Command::new("osascript")
-            .args(["-e", &script])
-            .output();
-        
+        let script = format!(
+            r#"tell application "System Events" to set visible of (processes whose unix id is {}) to true"#,
+            self.pid
+        );
+        let output = Command::new("osascript").args(["-e", &script]).output();
+
         match output {
             Ok(result) if result.status.success() => Ok(()),
-            Ok(result) => Err(AxError::Other(
-                String::from_utf8_lossy(&result.stderr).to_string()
-            )),
+            Ok(result) => Err(AxError::Other(String::from_utf8_lossy(&result.stderr).to_string())),
             Err(e) => Err(AxError::Other(e.to_string())),
         }
     }
@@ -161,11 +159,7 @@ impl Application {
     }
 
     /// 在指定窗口中查找特定标识符的元素
-    pub fn find_element_by_identifier_in_window(
-        &self,
-        window_idx: usize,
-        identifier: &str,
-    ) -> AxResult<Element> {
+    pub fn find_element_by_identifier_in_window(&self, window_idx: usize, identifier: &str) -> AxResult<Element> {
         let windows = self.windows()?;
 
         if window_idx >= windows.len() {
@@ -256,9 +250,7 @@ impl Application {
             r#"tell application "System Events" to get unix id of (processes whose name contains "{}")"#,
             name
         );
-        let output = Command::new("osascript")
-            .args(["-e", &script])
-            .output();
+        let output = Command::new("osascript").args(["-e", &script]).output();
 
         if let Ok(output) = output {
             let stdout = String::from_utf8_lossy(&output.stdout);
@@ -268,10 +260,7 @@ impl Application {
             }
         }
 
-        Err(AxError::Other(format!(
-            "未找到应用 '{}' 的进程",
-            name
-        )))
+        Err(AxError::Other(format!("未找到应用 '{}' 的进程", name)))
     }
 
     /// 查找富途牛牛 PID（便捷方法）
@@ -288,10 +277,7 @@ impl Clone for Application {
                 .map(Element::from_wrapper)
                 .expect("Failed to retain application element")
         };
-        Self {
-            element,
-            pid: self.pid,
-        }
+        Self { element, pid: self.pid }
     }
 }
 
@@ -300,8 +286,7 @@ impl Application {
     /// 获取第一个窗口
     pub fn first_window(&self) -> AxResult<Element> {
         let windows = self.windows()?;
-        windows.into_iter().next()
-            .ok_or(AxError::WindowNotFound)
+        windows.into_iter().next().ok_or(AxError::WindowNotFound)
     }
 
     /// 查找包含特定文本的对话框
@@ -367,11 +352,7 @@ impl Application {
     }
 
     /// 计算子元素相对于窗口的归一化框架
-    pub fn get_element_normalized_frame(
-        &self,
-        window_idx: usize,
-        element: &Element,
-    ) -> AxResult<Rect> {
+    pub fn get_element_normalized_frame(&self, window_idx: usize, element: &Element) -> AxResult<Rect> {
         let windows = self.windows()?;
 
         if window_idx >= windows.len() {
@@ -417,14 +398,10 @@ impl Application {
             if let Some(grid_element) = window.find_by_identifier(TARGET_ID, 10) {
                 match grid_element.frame() {
                     Ok(grid_frame) => {
-                        let norm_x =
-                            ((grid_frame.x - win_frame.x) / win_frame.width).clamp(0.0, 1.0);
-                        let norm_y =
-                            ((grid_frame.y - win_frame.y) / win_frame.height).clamp(0.0, 1.0);
-                        let norm_w =
-                            (grid_frame.width / win_frame.width).clamp(0.0, 1.0 - norm_x);
-                        let norm_h =
-                            (grid_frame.height / win_frame.height).clamp(0.0, 1.0 - norm_y);
+                        let norm_x = ((grid_frame.x - win_frame.x) / win_frame.width).clamp(0.0, 1.0);
+                        let norm_y = ((grid_frame.y - win_frame.y) / win_frame.height).clamp(0.0, 1.0);
+                        let norm_w = (grid_frame.width / win_frame.width).clamp(0.0, 1.0 - norm_x);
+                        let norm_h = (grid_frame.height / win_frame.height).clamp(0.0, 1.0 - norm_y);
 
                         debug!(
                             "Grid frame: screen({:.0},{:.0},{:.0},{:.0}) window({:.0},{:.0},{:.0},{:.0}) normalized({:.3},{:.3},{:.3},{:.3})",

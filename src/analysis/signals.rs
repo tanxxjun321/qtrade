@@ -26,7 +26,6 @@ pub fn detect_signals(
 
         // MACD 金叉/死叉
         detect_macd_cross(current, prev, &mut signals);
-
     }
 
     // RSI 超买/超卖
@@ -49,8 +48,7 @@ fn detect_ma_cross(
     let (cur_short, cur_long) = get_ma_pair(current, short, long);
     let (prev_short, prev_long) = get_ma_pair(previous, short, long);
 
-    if let (Some(cs), Some(cl), Some(ps), Some(pl)) = (cur_short, cur_long, prev_short, prev_long)
-    {
+    if let (Some(cs), Some(cl), Some(ps), Some(pl)) = (cur_short, cur_long, prev_short, prev_long) {
         // 金叉：短线从下方穿过长线
         if ps <= pl && cs > cl {
             signals.push(Signal::MaGoldenCross { short, long });
@@ -63,11 +61,7 @@ fn detect_ma_cross(
 }
 
 /// 获取指定周期的 MA 值对
-fn get_ma_pair(
-    ti: &TechnicalIndicators,
-    short: usize,
-    long: usize,
-) -> (Option<f64>, Option<f64>) {
+fn get_ma_pair(ti: &TechnicalIndicators, short: usize, long: usize) -> (Option<f64>, Option<f64>) {
     let short_val = match short {
         5 => ti.ma5,
         10 => ti.ma10,
@@ -86,17 +80,10 @@ fn get_ma_pair(
 }
 
 /// 检测 MACD 金叉/死叉
-fn detect_macd_cross(
-    current: &TechnicalIndicators,
-    previous: &TechnicalIndicators,
-    signals: &mut Vec<Signal>,
-) {
-    if let (Some(cur_dif), Some(cur_dea), Some(prev_dif), Some(prev_dea)) = (
-        current.macd_dif,
-        current.macd_dea,
-        previous.macd_dif,
-        previous.macd_dea,
-    ) {
+fn detect_macd_cross(current: &TechnicalIndicators, previous: &TechnicalIndicators, signals: &mut Vec<Signal>) {
+    if let (Some(cur_dif), Some(cur_dea), Some(prev_dif), Some(prev_dea)) =
+        (current.macd_dif, current.macd_dea, previous.macd_dif, previous.macd_dea)
+    {
         // 金叉：DIF 从下方穿过 DEA
         if prev_dif <= prev_dea && cur_dif > cur_dea {
             signals.push(Signal::MacdGoldenCross);
@@ -112,15 +99,9 @@ fn detect_macd_cross(
 fn detect_rsi_signals(current: &TechnicalIndicators, signals: &mut Vec<Signal>) {
     if let Some(rsi6) = current.rsi6 {
         if rsi6 >= RSI_OVERBOUGHT {
-            signals.push(Signal::RsiOverbought {
-                period: 6,
-                value: rsi6,
-            });
+            signals.push(Signal::RsiOverbought { period: 6, value: rsi6 });
         } else if rsi6 <= RSI_OVERSOLD {
-            signals.push(Signal::RsiOversold {
-                period: 6,
-                value: rsi6,
-            });
+            signals.push(Signal::RsiOversold { period: 6, value: rsi6 });
         }
     }
 
@@ -144,11 +125,7 @@ fn detect_rsi_signals(current: &TechnicalIndicators, signals: &mut Vec<Signal>) 
 /// 从后往前扫描最近 `lookback` 根 K 线，找到拐点的**首次发生日**：
 /// - 卖出：当天满足 DIFF > DEA > 0 且 DIFF 缩短，但前一天不满足
 /// - 买入：当天满足 DIFF < DEA < 0 且 |DIFF| 缩短，但前一天不满足
-pub fn detect_ms_macd_from_series(
-    dif: &[Option<f64>],
-    dea: &[Option<f64>],
-    lookback: usize,
-) -> Vec<Signal> {
+pub fn detect_ms_macd_from_series(dif: &[Option<f64>], dea: &[Option<f64>], lookback: usize) -> Vec<Signal> {
     let mut signals = Vec::new();
     let n = dif.len().min(dea.len());
     if n < 3 {
@@ -160,9 +137,7 @@ pub fn detect_ms_macd_from_series(
     // 卖出条件：DIFF > DEA > 0 且 DIFF 缩短
     let is_sell = |i: usize| -> bool {
         match (dif[i], dea[i], dif.get(i.wrapping_sub(1)).copied().flatten()) {
-            (Some(cd), Some(ce), Some(pd)) => {
-                cd > 0.0 && ce > 0.0 && cd > ce && pd > 0.0 && cd < pd
-            }
+            (Some(cd), Some(ce), Some(pd)) => cd > 0.0 && ce > 0.0 && cd > ce && pd > 0.0 && cd < pd,
             _ => false,
         }
     };
@@ -170,9 +145,7 @@ pub fn detect_ms_macd_from_series(
     // 买入条件：DIFF < DEA < 0 且 |DIFF| 缩短
     let is_buy = |i: usize| -> bool {
         match (dif[i], dea[i], dif.get(i.wrapping_sub(1)).copied().flatten()) {
-            (Some(cd), Some(ce), Some(pd)) => {
-                cd < 0.0 && ce < 0.0 && cd < ce && pd < 0.0 && cd.abs() < pd.abs()
-            }
+            (Some(cd), Some(ce), Some(pd)) => cd < 0.0 && ce < 0.0 && cd < ce && pd < 0.0 && cd.abs() < pd.abs(),
             _ => false,
         }
     };
@@ -241,7 +214,9 @@ mod tests {
         };
 
         let signals = detect_signals(&current, Some(&prev), &[], &[]);
-        assert!(signals.iter().any(|s| matches!(s, Signal::MaGoldenCross { short: 5, long: 10 })));
+        assert!(signals
+            .iter()
+            .any(|s| matches!(s, Signal::MaGoldenCross { short: 5, long: 10 })));
     }
 
     #[test]
@@ -258,7 +233,9 @@ mod tests {
         };
 
         let signals = detect_signals(&current, Some(&prev), &[], &[]);
-        assert!(signals.iter().any(|s| matches!(s, Signal::MaDeathCross { short: 5, long: 10 })));
+        assert!(signals
+            .iter()
+            .any(|s| matches!(s, Signal::MaDeathCross { short: 5, long: 10 })));
     }
 
     #[test]
@@ -269,7 +246,9 @@ mod tests {
         };
 
         let signals = detect_signals(&current, None, &[], &[]);
-        assert!(signals.iter().any(|s| matches!(s, Signal::RsiOverbought { period: 6, .. })));
+        assert!(signals
+            .iter()
+            .any(|s| matches!(s, Signal::RsiOverbought { period: 6, .. })));
     }
 
     #[test]

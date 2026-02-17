@@ -14,7 +14,7 @@ use tokio::net::TcpStream;
 use tokio::sync::mpsc;
 use tracing::{debug, error, info, warn};
 
-use crate::models::{DataSource, DailyKline, Market, QuoteSnapshot, StockCode};
+use crate::models::{DailyKline, DataSource, Market, QuoteSnapshot, StockCode};
 
 /// Futu 协议头部大小
 const HEADER_SIZE: usize = 44;
@@ -37,11 +37,11 @@ mod proto_id {
 
 /// Futu 市场代码（QotMarket 枚举值）
 mod futu_market {
-    pub const HK: i32 = 1;      // 港股 QotMarket_HK_Security
-    pub const US: i32 = 11;     // 美股 QotMarket_US_Security
-    pub const CN_SH: i32 = 21;  // A股-沪 QotMarket_CNSH_Security
-    pub const CN_SZ: i32 = 22;  // A股-深 QotMarket_CNSZ_Security
-    pub const SG: i32 = 13;     // 新加坡 QotMarket_SG_Security
+    pub const HK: i32 = 1; // 港股 QotMarket_HK_Security
+    pub const US: i32 = 11; // 美股 QotMarket_US_Security
+    pub const CN_SH: i32 = 21; // A股-沪 QotMarket_CNSH_Security
+    pub const CN_SZ: i32 = 22; // A股-深 QotMarket_CNSZ_Security
+    pub const SG: i32 = 13; // 新加坡 QotMarket_SG_Security
 }
 
 // ---- Protobuf 消息定义 (prost derive) ----
@@ -296,8 +296,8 @@ impl OpenApiClient {
         let (_proto_id, response) = self.recv_packet().await?;
 
         // InitConnect 响应也是 JSON
-        let resp: serde_json::Value = serde_json::from_slice(&response)
-            .with_context(|| "Failed to parse InitConnect response")?;
+        let resp: serde_json::Value =
+            serde_json::from_slice(&response).with_context(|| "Failed to parse InitConnect response")?;
 
         let ret_type = resp.get("retType").and_then(|v| v.as_i64()).unwrap_or(-1);
         if ret_type != 0 {
@@ -322,11 +322,7 @@ impl OpenApiClient {
 
     /// 订阅行情（按市场分批，避免一个市场失败影响全部）
     /// 订阅成功的市场会记录下来，后续 get_basic_quotes 只查这些市场
-    pub async fn subscribe(
-        &mut self,
-        stocks: &[StockCode],
-        sub_types: &[i32],
-    ) -> Result<()> {
+    pub async fn subscribe(&mut self, stocks: &[StockCode], sub_types: &[i32]) -> Result<()> {
         let markets = [Market::HK, Market::SH, Market::SZ, Market::US, Market::SG];
         let market_names = ["HK", "SH", "SZ", "US", "SG"];
 
@@ -368,18 +364,13 @@ impl OpenApiClient {
         }
         info!(
             "Total subscribed: {} stocks (markets: {:?})",
-            success_count,
-            self.subscribed_markets
+            success_count, self.subscribed_markets
         );
         Ok(())
     }
 
     /// 订阅单批次行情
-    async fn subscribe_batch(
-        &mut self,
-        stocks: &[&StockCode],
-        sub_types: &[i32],
-    ) -> Result<()> {
+    async fn subscribe_batch(&mut self, stocks: &[&StockCode], sub_types: &[i32]) -> Result<()> {
         let security_list: Vec<serde_json::Value> = stocks
             .iter()
             .map(|s| {
@@ -400,17 +391,13 @@ impl OpenApiClient {
         });
 
         let body_bytes = serde_json::to_vec(&body)?;
-        self.send_packet_with_fmt(proto_id::QOT_SUB, &body_bytes, 1)
-            .await?;
+        self.send_packet_with_fmt(proto_id::QOT_SUB, &body_bytes, 1).await?;
 
         let response = self.recv_response(proto_id::QOT_SUB).await?;
         // 先尝试 protobuf
         if let Ok(resp) = pb_sub::Response::decode(response.as_slice()) {
             if resp.ret_type != 0 {
-                anyhow::bail!(
-                    "QotSub failed: {}",
-                    resp.ret_msg.as_deref().unwrap_or("unknown")
-                );
+                anyhow::bail!("QotSub failed: {}", resp.ret_msg.as_deref().unwrap_or("unknown"));
             }
             return Ok(());
         }
@@ -427,11 +414,7 @@ impl OpenApiClient {
     }
 
     /// 退订行情
-    pub async fn unsubscribe(
-        &mut self,
-        stocks: &[StockCode],
-        sub_types: &[i32],
-    ) -> Result<()> {
+    pub async fn unsubscribe(&mut self, stocks: &[StockCode], sub_types: &[i32]) -> Result<()> {
         // 按市场分组
         let mut groups: Vec<Vec<&StockCode>> = vec![Vec::new(); 5];
         for s in stocks {
@@ -458,11 +441,7 @@ impl OpenApiClient {
     }
 
     /// 退订单批次行情
-    async fn unsubscribe_batch(
-        &mut self,
-        stocks: &[&StockCode],
-        sub_types: &[i32],
-    ) -> Result<()> {
+    async fn unsubscribe_batch(&mut self, stocks: &[&StockCode], sub_types: &[i32]) -> Result<()> {
         let security_list: Vec<serde_json::Value> = stocks
             .iter()
             .map(|s| {
@@ -483,16 +462,12 @@ impl OpenApiClient {
         });
 
         let body_bytes = serde_json::to_vec(&body)?;
-        self.send_packet_with_fmt(proto_id::QOT_SUB, &body_bytes, 1)
-            .await?;
+        self.send_packet_with_fmt(proto_id::QOT_SUB, &body_bytes, 1).await?;
 
         let response = self.recv_response(proto_id::QOT_SUB).await?;
         if let Ok(resp) = pb_sub::Response::decode(response.as_slice()) {
             if resp.ret_type != 0 {
-                anyhow::bail!(
-                    "QotUnsub failed: {}",
-                    resp.ret_msg.as_deref().unwrap_or("unknown")
-                );
+                anyhow::bail!("QotUnsub failed: {}", resp.ret_msg.as_deref().unwrap_or("unknown"));
             }
             return Ok(());
         }
@@ -508,10 +483,7 @@ impl OpenApiClient {
     }
 
     /// 获取基本行情（只查询已订阅成功的市场）
-    pub async fn get_basic_quotes(
-        &mut self,
-        stocks: &[StockCode],
-    ) -> Result<Vec<QuoteSnapshot>> {
+    pub async fn get_basic_quotes(&mut self, stocks: &[StockCode]) -> Result<Vec<QuoteSnapshot>> {
         let markets = [Market::HK, Market::SH, Market::SZ, Market::US, Market::SG];
         let market_names = ["HK", "SH", "SZ", "US", "SG"];
 
@@ -554,10 +526,7 @@ impl OpenApiClient {
     }
 
     /// 获取单批次基本行情
-    async fn get_basic_quotes_batch(
-        &mut self,
-        stocks: &[&StockCode],
-    ) -> Result<Vec<QuoteSnapshot>> {
+    async fn get_basic_quotes_batch(&mut self, stocks: &[&StockCode]) -> Result<Vec<QuoteSnapshot>> {
         let security_list: Vec<serde_json::Value> = stocks
             .iter()
             .map(|s| {
@@ -602,10 +571,7 @@ impl OpenApiClient {
         }
 
         // 两种格式都失败
-        anyhow::bail!(
-            "Failed to decode QotGetBasicQot response ({} bytes)",
-            response.len()
-        )
+        anyhow::bail!("Failed to decode QotGetBasicQot response ({} bytes)", response.len())
     }
 
     /// 请求单只股票的历史日K线
@@ -635,21 +601,13 @@ impl OpenApiClient {
         self.send_packet_with_fmt(proto_id::QOT_REQUEST_HISTORY_KL, &body_bytes, 1)
             .await?;
 
-        let response = self
-            .recv_response(proto_id::QOT_REQUEST_HISTORY_KL)
-            .await?;
+        let response = self.recv_response(proto_id::QOT_REQUEST_HISTORY_KL).await?;
 
         // 尝试 JSON 解码
         if let Ok(json_resp) = serde_json::from_slice::<serde_json::Value>(&response) {
-            let ret_type = json_resp
-                .get("retType")
-                .and_then(|v| v.as_i64())
-                .unwrap_or(-1);
+            let ret_type = json_resp.get("retType").and_then(|v| v.as_i64()).unwrap_or(-1);
             if ret_type != 0 {
-                let ret_msg = json_resp
-                    .get("retMsg")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("unknown");
+                let ret_msg = json_resp.get("retMsg").and_then(|v| v.as_str()).unwrap_or("unknown");
                 anyhow::bail!("QotRequestHistoryKL error: {}", ret_msg);
             }
             return Ok(parse_kline_json(&json_resp));
@@ -672,24 +630,13 @@ impl OpenApiClient {
         let mut result = std::collections::HashMap::new();
 
         for (i, stock) in stocks.iter().enumerate() {
-            match self
-                .request_history_kline(stock, begin, end, max_count)
-                .await
-            {
+            match self.request_history_kline(stock, begin, end, max_count).await {
                 Ok(klines) => {
-                    debug!(
-                        "Got {} daily klines for {}",
-                        klines.len(),
-                        stock.display_code()
-                    );
+                    debug!("Got {} daily klines for {}", klines.len(), stock.display_code());
                     result.insert(stock.clone(), klines);
                 }
                 Err(e) => {
-                    warn!(
-                        "Failed to get klines for {}: {}",
-                        stock.display_code(),
-                        e
-                    );
+                    warn!("Failed to get klines for {}: {}", stock.display_code(), e);
                 }
             }
 
@@ -715,32 +662,20 @@ impl OpenApiClient {
         let total = stocks.len();
 
         for (i, stock) in stocks.iter().enumerate() {
-            match self
-                .request_history_kline(stock, begin, end, max_count)
-                .await
-            {
+            match self.request_history_kline(stock, begin, end, max_count).await {
                 Ok(klines) => {
-                    info!(
-                        "Got {} daily klines for {}",
-                        klines.len(),
-                        stock.display_code()
-                    );
+                    info!("Got {} daily klines for {}", klines.len(), stock.display_code());
                     result.insert(stock.clone(), klines);
                 }
                 Err(e) => {
-                    warn!(
-                        "Failed to get klines for {}: {}",
-                        stock.display_code(),
-                        e
-                    );
+                    warn!("Failed to get klines for {}: {}", stock.display_code(), e);
                 }
             }
 
             // 更新进度
             {
                 let mut state = dash_state.lock().await;
-                state.daily_kline_status =
-                    format!("日K获取中({}/{})", i + 1, total);
+                state.daily_kline_status = format!("日K获取中({}/{})", i + 1, total);
             }
 
             // 间隔 200ms 防限流（最后一个不需要等）
@@ -795,16 +730,8 @@ impl OpenApiClient {
     }
 
     /// 发送数据包，指定格式类型（0=protobuf, 1=json）
-    async fn send_packet_with_fmt(
-        &mut self,
-        proto_id: u32,
-        body: &[u8],
-        fmt: u8,
-    ) -> Result<()> {
-        let stream = self
-            .stream
-            .as_mut()
-            .context("Not connected")?;
+    async fn send_packet_with_fmt(&mut self, proto_id: u32, body: &[u8], fmt: u8) -> Result<()> {
+        let stream = self.stream.as_mut().context("Not connected")?;
 
         self.serial_no += 1;
         let header = build_header(proto_id, self.serial_no, body, fmt);
@@ -815,7 +742,10 @@ impl OpenApiClient {
 
         debug!(
             "Sent packet: proto_id={}, serial={}, body_len={}, fmt={}",
-            proto_id, self.serial_no, body.len(), fmt
+            proto_id,
+            self.serial_no,
+            body.len(),
+            fmt
         );
 
         Ok(())
@@ -823,10 +753,7 @@ impl OpenApiClient {
 
     /// 接收数据包
     async fn recv_packet(&mut self) -> Result<(u32, Vec<u8>)> {
-        let stream = self
-            .stream
-            .as_mut()
-            .context("Not connected")?;
+        let stream = self.stream.as_mut().context("Not connected")?;
 
         // 读取头部
         let mut header_buf = [0u8; HEADER_SIZE];
@@ -840,10 +767,7 @@ impl OpenApiClient {
             stream.read_exact(&mut body).await?;
         }
 
-        debug!(
-            "Received packet: proto_id={}, body_len={}",
-            proto_id, body_len
-        );
+        debug!("Received packet: proto_id={}, body_len={}", proto_id, body_len);
 
         Ok((proto_id, body))
     }
@@ -860,7 +784,10 @@ impl OpenApiClient {
             } else if pid == proto_id::KEEP_ALIVE {
                 debug!("Skipping keepalive while waiting for response {}", expected_pid);
             } else {
-                debug!("Skipping unexpected packet proto_id={} while waiting for {}", pid, expected_pid);
+                debug!(
+                    "Skipping unexpected packet proto_id={} while waiting for {}",
+                    pid, expected_pid
+                );
             }
         }
     }
@@ -868,7 +795,7 @@ impl OpenApiClient {
 
 /// 构建 Futu 协议头部（44 字节）
 fn build_header(proto_id: u32, serial_no: u32, body: &[u8], fmt: u8) -> Vec<u8> {
-    use sha1::{Sha1, Digest};
+    use sha1::{Digest, Sha1};
 
     let mut buf = BytesMut::with_capacity(HEADER_SIZE);
 
@@ -877,14 +804,14 @@ fn build_header(proto_id: u32, serial_no: u32, body: &[u8], fmt: u8) -> Vec<u8> 
     hasher.update(body);
     let sha1_hash: [u8; 20] = hasher.finalize().into();
 
-    buf.put_slice(&FUTU_MAGIC);            // 0-1: magic "FT"
-    buf.put_u32_le(proto_id);              // 2-5: proto_id
-    buf.put_u8(fmt);                       // 6: proto_fmt_type (0=protobuf, 1=json)
-    buf.put_u8(PROTO_VERSION);             // 7: proto_ver
-    buf.put_u32_le(serial_no);             // 8-11: serial_no
-    buf.put_u32_le(body.len() as u32);     // 12-15: body_len
-    buf.put_slice(&sha1_hash);             // 16-35: sha1
-    buf.put_slice(&[0u8; 8]);              // 36-43: reserved
+    buf.put_slice(&FUTU_MAGIC); // 0-1: magic "FT"
+    buf.put_u32_le(proto_id); // 2-5: proto_id
+    buf.put_u8(fmt); // 6: proto_fmt_type (0=protobuf, 1=json)
+    buf.put_u8(PROTO_VERSION); // 7: proto_ver
+    buf.put_u32_le(serial_no); // 8-11: serial_no
+    buf.put_u32_le(body.len() as u32); // 12-15: body_len
+    buf.put_slice(&sha1_hash); // 16-35: sha1
+    buf.put_slice(&[0u8; 8]); // 36-43: reserved
 
     buf.to_vec()
 }
@@ -968,8 +895,7 @@ fn json_as_i64(v: &serde_json::Value) -> Option<i64> {
 
 /// 从 JSON 值中提取浮点数（兼容数字和字符串格式）
 fn json_as_f64(v: &serde_json::Value) -> Option<f64> {
-    v.as_f64()
-        .or_else(|| v.as_str().and_then(|s| s.parse().ok()))
+    v.as_f64().or_else(|| v.as_str().and_then(|s| s.parse().ok()))
 }
 
 /// 从 JSON 响应解析 BasicQot 列表
@@ -1053,11 +979,7 @@ fn parse_kline_json(resp: &serde_json::Value) -> Vec<DailyKline> {
                 low: kl.get("lowPrice").and_then(|v| v.as_f64()).unwrap_or(0.0),
                 volume: kl.get("volume").and_then(|v| v.as_i64()).unwrap_or(0) as u64,
                 turnover: kl.get("turnover").and_then(|v| v.as_f64()).unwrap_or(0.0),
-                date: kl
-                    .get("time")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("")
-                    .to_string(),
+                date: kl.get("time").and_then(|v| v.as_str()).unwrap_or("").to_string(),
             })
         })
         .collect()

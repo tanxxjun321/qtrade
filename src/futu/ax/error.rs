@@ -1,7 +1,7 @@
 //! 错误类型定义
 
-use std::fmt;
 use std::error::Error;
+use std::fmt;
 
 /// AX 操作错误
 #[derive(Debug)]
@@ -24,7 +24,9 @@ impl fmt::Display for AxError {
         match self {
             AxError::ApiError(code) => write!(f, "AX API 错误: 代码 {}", code),
             AxError::InvalidElement => write!(f, "无效的元素"),
-            AxError::AttributeNotFound(attr) => write!(f, "属性不存在: {}", attr),
+            AxError::AttributeNotFound(attr) => {
+                write!(f, "属性不存在: {}", attr)
+            }
             AxError::TypeMismatch { expected, actual } => {
                 write!(f, "类型转换失败: 期望 {}, 实际 {}", expected, actual)
             }
@@ -35,7 +37,9 @@ impl fmt::Display for AxError {
             AxError::AppNotAccessible => write!(f, "应用未运行或无法访问"),
             AxError::WindowNotFound => write!(f, "未找到窗口"),
             AxError::ElementNotFound(id) => write!(f, "未找到元素: {}", id),
-            AxError::FrameParseFailed(msg) => write!(f, "框架解析失败: {}", msg),
+            AxError::FrameParseFailed(msg) => {
+                write!(f, "框架解析失败: {}", msg)
+            }
             AxError::Other(msg) => write!(f, "其他错误: {}", msg),
         }
     }

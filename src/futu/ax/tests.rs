@@ -346,11 +346,7 @@ mod integration_tests {
     fn test_application_new_current_process() {
         let pid = std::process::id() as i32;
         let result = Application::new(pid);
-        assert!(
-            result.is_ok(),
-            "Failed to create Application: {:?}",
-            result.err()
-        );
+        assert!(result.is_ok(), "Failed to create Application: {:?}", result.err());
 
         let app = result.unwrap();
         assert_eq!(app.pid(), pid);
@@ -419,10 +415,7 @@ mod integration_tests {
         let dump = app.dump_tree(2);
         assert!(!dump.is_empty());
         // 打印前 500 字符
-        println!(
-            "Tree dump (first 500 chars):\n{}",
-            &dump[..dump.len().min(500)]
-        );
+        println!("Tree dump (first 500 chars):\n{}", &dump[..dump.len().min(500)]);
     }
 
     #[test]

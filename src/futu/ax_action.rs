@@ -38,8 +38,7 @@ fn element_to_raw(element: CFTypeRef) -> CFTypeRef {
 
 /// 获取 AX 元素的属性值
 pub fn get_attr(element: CFTypeRef, attribute: &str) -> Result<CFTypeRef> {
-    let elem = unsafe { element_from_raw(element) }
-        .context("Invalid element pointer")?;
+    let elem = unsafe { element_from_raw(element) }.context("Invalid element pointer")?;
 
     match elem.attribute(attribute) {
         Ok(cf_type) => {
@@ -184,25 +183,22 @@ pub fn get_parent(element: CFTypeRef) -> Option<CFTypeRef> {
 /// 获取元素的子元素数组
 fn get_children(element: CFTypeRef) -> Option<CFTypeRef> {
     let elem = unsafe { element_from_raw(element) }?;
-    elem.attribute("AXChildren")
-        .ok()
-        .and_then(|cf_type| {
-            if let CfType::Array(a) = cf_type {
-                let p = a.as_ptr();
-                unsafe { CFRetain(p) };
-                Some(p)
-            } else {
-                None
-            }
-        })
+    elem.attribute("AXChildren").ok().and_then(|cf_type| {
+        if let CfType::Array(a) = cf_type {
+            let p = a.as_ptr();
+            unsafe { CFRetain(p) };
+            Some(p)
+        } else {
+            None
+        }
+    })
 }
 
 // ===== 写操作 API =====
 
 /// 对 AX 元素执行操作（如 AXPress、AXRaise）
 pub fn perform_action(element: CFTypeRef, action: &str) -> Result<()> {
-    let elem = unsafe { element_from_raw(element) }
-        .context("Invalid element pointer")?;
+    let elem = unsafe { element_from_raw(element) }.context("Invalid element pointer")?;
 
     elem.perform_action(action)
         .map_err(|e| anyhow::anyhow!("AXPerformAction('{}') failed: {}", action, e))
@@ -210,8 +206,7 @@ pub fn perform_action(element: CFTypeRef, action: &str) -> Result<()> {
 
 /// 设置 AX 元素的文本值（AXValue 属性）
 pub fn set_text_field_value(element: CFTypeRef, text: &str) -> Result<()> {
-    let elem = unsafe { element_from_raw(element) }
-        .context("Invalid element pointer")?;
+    let elem = unsafe { element_from_raw(element) }.context("Invalid element pointer")?;
 
     elem.set_string_value(text)
         .map_err(|e| anyhow::anyhow!("AXSetAttributeValue('AXValue', '{}') failed: {}", text, e))
@@ -238,14 +233,10 @@ pub fn get_bool_attr(element: CFTypeRef, attribute: &str) -> Option<bool> {
 
 /// 设置布尔属性
 pub fn set_bool_attr(element: CFTypeRef, attribute: &str, value: bool) -> Result<()> {
-    let elem = unsafe { element_from_raw(element) }
-        .context("Invalid element pointer")?;
+    let elem = unsafe { element_from_raw(element) }.context("Invalid element pointer")?;
 
     elem.set_attribute_bool(attribute, value)
-        .map_err(|e| anyhow::anyhow!(
-            "AXSetAttributeValue('{}', {}) failed: {}",
-            attribute, value, e
-        ))
+        .map_err(|e| anyhow::anyhow!("AXSetAttributeValue('{}', {}) failed: {}", attribute, value, e))
 }
 
 // ===== 前台坐标点击（CGEventPost to HID） =====
@@ -255,11 +246,9 @@ pub fn set_bool_attr(element: CFTypeRef, attribute: &str, value: bool) -> Result
 /// 读取 AXPosition + AXSize 计算中心点，通过 CGEventPost(HID) 发送点击。
 /// 需要窗口已 raise 到前台。仅用于 AXPress 无效的 Qt 控件。
 pub fn click_at_element(element: CFTypeRef) -> Result<()> {
-    let elem = unsafe { element_from_raw(element) }
-        .context("Invalid element pointer")?;
+    let elem = unsafe { element_from_raw(element) }.context("Invalid element pointer")?;
 
-    action::click_at_element(&elem)
-        .map_err(|e| anyhow::anyhow!("click_at_element failed: {}", e))
+    action::click_at_element(&elem).map_err(|e| anyhow::anyhow!("click_at_element failed: {}", e))
 }
 
 /// 后台点击：通过 CGEventPostToPSN 将鼠标事件直接发送到指定进程
@@ -291,36 +280,24 @@ pub fn click_at_element_to_pid(element: CFTypeRef, pid: i32) -> Result<()> {
     }
 
     // 读取元素位置和大小 - 使用内部辅助获取 frame
-    let elem = unsafe { element_from_raw(element) }
-        .context("Invalid element pointer")?;
+    let elem = unsafe { element_from_raw(element) }.context("Invalid element pointer")?;
 
-    let frame = elem.frame()
-        .map_err(|e| anyhow::anyhow!("无法读取元素框架: {}", e))?;
+    let frame = elem.frame().map_err(|e| anyhow::anyhow!("无法读取元素框架: {}", e))?;
 
-    let center = CGPoint::new(
-        frame.x + frame.width / 2.0,
-        frame.y + frame.height / 2.0,
+    let center = CGPoint::new(frame.x + frame.width / 2.0, frame.y + frame.height / 2.0);
+    debug!(
+        "click_at_element_to_pid({}): center=({:.0},{:.0})",
+        pid, center.x, center.y
     );
-    debug!("click_at_element_to_pid({}): center=({:.0},{:.0})", pid, center.x, center.y);
 
     let source = CGEventSource::new(CGEventSourceStateID::Private)
         .map_err(|_| anyhow::anyhow!("Failed to create CGEventSource"))?;
 
-    let mouse_down = CGEvent::new_mouse_event(
-        source.clone(),
-        CGEventType::LeftMouseDown,
-        center,
-        CGMouseButton::Left,
-    )
-    .map_err(|_| anyhow::anyhow!("Failed to create mouse down event"))?;
+    let mouse_down = CGEvent::new_mouse_event(source.clone(), CGEventType::LeftMouseDown, center, CGMouseButton::Left)
+        .map_err(|_| anyhow::anyhow!("Failed to create mouse down event"))?;
 
-    let mouse_up = CGEvent::new_mouse_event(
-        source,
-        CGEventType::LeftMouseUp,
-        center,
-        CGMouseButton::Left,
-    )
-    .map_err(|_| anyhow::anyhow!("Failed to create mouse up event"))?;
+    let mouse_up = CGEvent::new_mouse_event(source, CGEventType::LeftMouseUp, center, CGMouseButton::Left)
+        .map_err(|_| anyhow::anyhow!("Failed to create mouse up event"))?;
 
     use foreign_types::ForeignType;
     unsafe {
@@ -339,11 +316,9 @@ pub fn click_at_element_to_pid(element: CFTypeRef, pid: i32) -> Result<()> {
 /// 用于 AXIncrementor 等不接受 AXValue 直接设值的 Qt 控件。
 /// 需要窗口已 raise 到前台。
 pub fn type_value_via_paste(element: CFTypeRef, value: &str) -> Result<()> {
-    let elem = unsafe { element_from_raw(element) }
-        .context("Invalid element pointer")?;
+    let elem = unsafe { element_from_raw(element) }.context("Invalid element pointer")?;
 
-    action::set_string_value_via_paste(&elem, value)
-        .map_err(|e| anyhow::anyhow!("type_value_via_paste failed: {}", e))
+    action::set_string_value_via_paste(&elem, value).map_err(|e| anyhow::anyhow!("type_value_via_paste failed: {}", e))
 }
 
 // ===== 元素搜索 API =====
@@ -377,40 +352,24 @@ fn to_new_matcher<'a>(matcher: &'a Matcher<'a>) -> action::Matcher<'a> {
 ///
 /// 从 root 开始，搜索匹配 role + matcher 的元素。
 /// max_depth 控制搜索深度。
-pub fn find_element(
-    root: CFTypeRef,
-    role: &str,
-    matcher: &Matcher,
-    max_depth: usize,
-) -> Option<CFTypeRef> {
+pub fn find_element(root: CFTypeRef, role: &str, matcher: &Matcher, max_depth: usize) -> Option<CFTypeRef> {
     let root_elem = unsafe { element_from_raw(root) }?;
     let new_matcher = to_new_matcher(matcher);
 
-    action::find_element_with_matcher(&root_elem, role, &new_matcher, max_depth)
-        .map(|e| {
-            let ptr = e.as_ptr();
-            unsafe { CFRetain(ptr) };
-            ptr
-        })
+    action::find_element_with_matcher(&root_elem, role, &new_matcher, max_depth).map(|e| {
+        let ptr = e.as_ptr();
+        unsafe { CFRetain(ptr) };
+        ptr
+    })
 }
 
 /// 按 AXTitle 匹配搜索元素
-pub fn find_element_by_title(
-    root: CFTypeRef,
-    role: &str,
-    title: &str,
-    max_depth: usize,
-) -> Option<CFTypeRef> {
+pub fn find_element_by_title(root: CFTypeRef, role: &str, title: &str, max_depth: usize) -> Option<CFTypeRef> {
     find_element(root, role, &Matcher::Title(title), max_depth)
 }
 
 /// 搜索所有匹配的元素（非递归返回第一个，而是返回所有）
-pub fn find_all_elements(
-    root: CFTypeRef,
-    role: &str,
-    matcher: &Matcher,
-    max_depth: usize,
-) -> Vec<CFTypeRef> {
+pub fn find_all_elements(root: CFTypeRef, role: &str, matcher: &Matcher, max_depth: usize) -> Vec<CFTypeRef> {
     let root_elem = match unsafe { element_from_raw(root) } {
         Some(e) => e,
         None => return Vec::new(),
@@ -474,17 +433,18 @@ pub fn find_tree_node(root: CFTypeRef, path: &[&str]) -> Option<CFTypeRef> {
 
         for row in &rows {
             // AXRow 的 title 可能在 row 本身或其子 AXStaticText 中
-            let row_title = row.title()
-                .or_else(|| row.value())
-                .or_else(|| {
-                    // 搜索子元素中的 AXStaticText
-                    row.find(|e| e.role().as_deref() == Some("AXStaticText"), 3)
-                        .and_then(|st| st.value().or_else(|| st.title()))
-                });
+            let row_title = row.title().or_else(|| row.value()).or_else(|| {
+                // 搜索子元素中的 AXStaticText
+                row.find(|e| e.role().as_deref() == Some("AXStaticText"), 3)
+                    .and_then(|st| st.value().or_else(|| st.title()))
+            });
 
             if let Some(ref title) = row_title {
                 if title.contains(target_title) {
-                    debug!("Tree node matched: level={} target='{}' found='{}'", level, target_title, title);
+                    debug!(
+                        "Tree node matched: level={} target='{}' found='{}'",
+                        level, target_title, title
+                    );
                     found_node = Some(row.clone());
                     break;
                 }

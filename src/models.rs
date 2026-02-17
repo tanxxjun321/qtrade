@@ -77,10 +77,10 @@ impl StockCode {
     /// 是否为指数代码（指数的 VWAP/换手率等指标无意义）
     pub fn is_index(&self) -> bool {
         match self.market {
-            Market::SH => self.code.starts_with("000"),  // 上证指数系列
-            Market::SZ => self.code.starts_with("399"),  // 深证指数系列
-            Market::HK => self.code.starts_with("800"),  // 港股指数
-            Market::US => self.code.starts_with('.'),     // 美股指数
+            Market::SH => self.code.starts_with("000"), // 上证指数系列
+            Market::SZ => self.code.starts_with("399"), // 深证指数系列
+            Market::HK => self.code.starts_with("800"), // 港股指数
+            Market::US => self.code.starts_with('.'),   // 美股指数
             _ => false,
         }
     }
@@ -199,9 +199,7 @@ impl UsMarketSession {
     /// - 夜盘 → "夜盘"
     pub fn extended_label(&self) -> &'static str {
         match self {
-            UsMarketSession::PreMarket
-            | UsMarketSession::Regular
-            | UsMarketSession::Closed => "盘前",
+            UsMarketSession::PreMarket | UsMarketSession::Regular | UsMarketSession::Closed => "盘前",
             UsMarketSession::AfterHours => "盘后",
             UsMarketSession::Overnight => "夜盘",
         }
@@ -300,9 +298,9 @@ pub struct WatchlistEntry {
 /// 信号情绪方向
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Sentiment {
-    Bullish,  // 利多
-    Bearish,  // 利空
-    Neutral,  // 中性
+    Bullish, // 利多
+    Bearish, // 利空
+    Neutral, // 中性
 }
 
 impl fmt::Display for Sentiment {
@@ -376,10 +374,18 @@ impl Signal {
             Signal::RsiOversold { .. } => Sentiment::Bullish,
             Signal::VolumeSpike { .. } => Sentiment::Neutral,
             Signal::VwapDeviation { deviation_pct } => {
-                if *deviation_pct > 0.0 { Sentiment::Bullish } else { Sentiment::Bearish }
+                if *deviation_pct > 0.0 {
+                    Sentiment::Bullish
+                } else {
+                    Sentiment::Bearish
+                }
             }
             Signal::RapidMove { change_pct } => {
-                if *change_pct > 0.0 { Sentiment::Bullish } else { Sentiment::Bearish }
+                if *change_pct > 0.0 {
+                    Sentiment::Bullish
+                } else {
+                    Sentiment::Bearish
+                }
             }
             Signal::AmplitudeBreakout { .. } => Sentiment::Neutral,
             Signal::MsMacdBuy => Sentiment::Bullish,
@@ -497,9 +503,9 @@ mod tests {
         assert!(StockCode::new(Market::SH, "000001").is_index()); // 上证指数
         assert!(StockCode::new(Market::SZ, "399006").is_index()); // 创业板指
         assert!(StockCode::new(Market::HK, "800000").is_index()); // 恒生指数
-        assert!(StockCode::new(Market::US, ".DJI").is_index());   // 道琼斯
+        assert!(StockCode::new(Market::US, ".DJI").is_index()); // 道琼斯
         assert!(!StockCode::new(Market::SZ, "000001").is_index()); // 平安银行
-        assert!(!StockCode::new(Market::HK, "00700").is_index());  // 腾讯
-        assert!(!StockCode::new(Market::US, "AAPL").is_index());   // 苹果
+        assert!(!StockCode::new(Market::HK, "00700").is_index()); // 腾讯
+        assert!(!StockCode::new(Market::US, "AAPL").is_index()); // 苹果
     }
 }

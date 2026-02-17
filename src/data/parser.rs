@@ -24,9 +24,7 @@ pub fn try_parse_quote_text(text: &str) -> Option<QuoteSnapshot> {
 
     if parts.len() < 3 {
         // 尝试按连续空格拆分
-        let parts: Vec<&str> = text
-            .split_whitespace()
-            .collect();
+        let parts: Vec<&str> = text.split_whitespace().collect();
         if parts.len() >= 3 {
             return try_parse_parts(&parts);
         }
@@ -156,7 +154,11 @@ pub fn parse_stock_code(s: &str) -> Option<StockCode> {
                     || (m == Market::FX && code.chars().all(|c| c.is_ascii_alphanumeric())))
             {
                 // OCR 可能输出混合大小写，US ticker 统一转大写
-                let normalized = if m == Market::US { code.to_ascii_uppercase() } else { code.to_string() };
+                let normalized = if m == Market::US {
+                    code.to_ascii_uppercase()
+                } else {
+                    code.to_string()
+                };
                 return Some(StockCode::new(m, &normalized));
             }
         }
@@ -168,10 +170,7 @@ pub fn parse_stock_code(s: &str) -> Option<StockCode> {
     {
         let stripped = s.trim_end_matches('.');
         let alpha_part = stripped.trim_start_matches('.');
-        if !alpha_part.is_empty()
-            && alpha_part.len() <= 5
-            && alpha_part.chars().all(|c| c.is_ascii_alphabetic())
-        {
+        if !alpha_part.is_empty() && alpha_part.len() <= 5 && alpha_part.chars().all(|c| c.is_ascii_alphabetic()) {
             let upper = alpha_part.to_ascii_uppercase();
             if !matches!(upper.as_str(), "HK" | "SH" | "SZ" | "US" | "SG" | "FX") {
                 // 保留前导点号（.DJI/.IXIC 等指数代码）

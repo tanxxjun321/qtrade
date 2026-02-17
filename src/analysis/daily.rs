@@ -7,7 +7,7 @@ use std::path::PathBuf;
 
 use tracing::{info, warn};
 
-use crate::models::{DailyKline, StockCode, TechnicalIndicators, Timeframe, TimedSignal};
+use crate::models::{DailyKline, StockCode, TechnicalIndicators, TimedSignal, Timeframe};
 
 use super::indicators;
 use super::signals;
@@ -116,11 +116,7 @@ impl DailyAnalysisEngine {
 
         let mut stocks = HashMap::new();
         for (code, klines) in &self.klines {
-            let last_fetched = self
-                .last_fetched
-                .get(code)
-                .cloned()
-                .unwrap_or_default();
+            let last_fetched = self.last_fetched.get(code).cloned().unwrap_or_default();
             stocks.insert(
                 code.display_code(),
                 StockKlineCache {
@@ -152,10 +148,7 @@ impl DailyAnalysisEngine {
             let existing = self.klines.entry(code.clone()).or_default();
 
             // 用 HashMap 按日期去重，新数据覆盖旧数据
-            let mut by_date: HashMap<String, DailyKline> = existing
-                .drain(..)
-                .map(|k| (k.date.clone(), k))
-                .collect();
+            let mut by_date: HashMap<String, DailyKline> = existing.drain(..).map(|k| (k.date.clone(), k)).collect();
 
             for kl in new_klines {
                 by_date.insert(kl.date.clone(), kl);
@@ -208,8 +201,7 @@ impl DailyAnalysisEngine {
 
             // MS-MACD：扫描完整 DIF/DEA 序列，找拐点首日
             let macd_result = indicators::macd(&close_prices, 12, 26, 9);
-            let ms_macd_signals =
-                signals::detect_ms_macd_from_series(&macd_result.dif, &macd_result.dea, 5);
+            let ms_macd_signals = signals::detect_ms_macd_from_series(&macd_result.dif, &macd_result.dea, 5);
             raw_signals.extend(ms_macd_signals);
 
             let timed_signals: Vec<TimedSignal> = raw_signals
@@ -249,10 +241,7 @@ impl DailyAnalysisEngine {
 
     /// 获取某只股票缓存中最后一条K线的日期
     pub fn last_kline_date(&self, code: &StockCode) -> Option<String> {
-        self.klines
-            .get(code)
-            .and_then(|k| k.last())
-            .map(|k| k.date.clone())
+        self.klines.get(code).and_then(|k| k.last()).map(|k| k.date.clone())
     }
 
     /// 替换某只股票的全部K线数据（断裂时使用，丢弃旧缓存）
@@ -415,11 +404,7 @@ mod tests {
         let signals = engine.get_signals();
         if let Some(sigs) = signals.get(&code) {
             for sig in sigs {
-                assert_eq!(
-                    sig.timeframe,
-                    Timeframe::Daily,
-                    "All signals should be Daily timeframe"
-                );
+                assert_eq!(sig.timeframe, Timeframe::Daily, "All signals should be Daily timeframe");
             }
         }
     }
@@ -485,9 +470,8 @@ mod tests {
 
         let klines = engine.klines.get(&code).unwrap();
         assert_eq!(klines.len(), 12); // 10 - 1 overlap + 3 = 12
-        // 01-10 应该被覆盖为 close=200.0
+                                      // 01-10 应该被覆盖为 close=200.0
         let jan10 = klines.iter().find(|k| k.date == "2025-01-10").unwrap();
         assert_eq!(jan10.close, 200.0);
     }
-
 }

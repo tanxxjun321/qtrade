@@ -97,9 +97,7 @@ impl AxValue {
     /// 提取 CGPoint {x, y}
     pub fn as_point(&self) -> Option<(f64, f64)> {
         let mut point: [f64; 2] = [0.0, 0.0];
-        let ok = unsafe {
-            AXValueGetValue(self.0, K_AX_VALUE_TYPE_CG_POINT, point.as_mut_ptr() as *mut c_void)
-        };
+        let ok = unsafe { AXValueGetValue(self.0, K_AX_VALUE_TYPE_CG_POINT, point.as_mut_ptr() as *mut c_void) };
         if ok {
             Some((point[0], point[1]))
         } else {
@@ -110,9 +108,7 @@ impl AxValue {
     /// 提取 CGSize {width, height}
     pub fn as_size(&self) -> Option<(f64, f64)> {
         let mut size: [f64; 2] = [0.0, 0.0];
-        let ok = unsafe {
-            AXValueGetValue(self.0, K_AX_VALUE_TYPE_CG_SIZE, size.as_mut_ptr() as *mut c_void)
-        };
+        let ok = unsafe { AXValueGetValue(self.0, K_AX_VALUE_TYPE_CG_SIZE, size.as_mut_ptr() as *mut c_void) };
         if ok {
             Some((size[0], size[1]))
         } else {
@@ -123,9 +119,7 @@ impl AxValue {
     /// 提取 CGRect {x, y, width, height}
     pub fn as_rect(&self) -> Option<(f64, f64, f64, f64)> {
         let mut rect: [f64; 4] = [0.0, 0.0, 0.0, 0.0];
-        let ok = unsafe {
-            AXValueGetValue(self.0, K_AX_VALUE_TYPE_CG_RECT, rect.as_mut_ptr() as *mut c_void)
-        };
+        let ok = unsafe { AXValueGetValue(self.0, K_AX_VALUE_TYPE_CG_RECT, rect.as_mut_ptr() as *mut c_void) };
         if ok {
             Some((rect[0], rect[1], rect[2], rect[3]))
         } else {
@@ -252,14 +246,8 @@ impl CfString {
         const BUFFER_SIZE: isize = 4096;
         let mut buffer: Vec<u8> = vec![0; BUFFER_SIZE as usize];
 
-        let ok = unsafe {
-            CFStringGetCString(
-                self.0 as _,
-                buffer.as_mut_ptr(),
-                BUFFER_SIZE,
-                K_CF_STRING_ENCODING_UTF8,
-            )
-        };
+        let ok =
+            unsafe { CFStringGetCString(self.0 as _, buffer.as_mut_ptr(), BUFFER_SIZE, K_CF_STRING_ENCODING_UTF8) };
 
         if ok {
             // 找到 null 终止符
@@ -302,9 +290,7 @@ impl CfNumber {
     /// 转换为 i64
     pub fn as_i64(&self) -> Option<i64> {
         let mut value: i64 = 0;
-        let ok = unsafe {
-            CFNumberGetValue(self.0, CFNumberType::Int64, &mut value as *mut _ as *mut c_void)
-        };
+        let ok = unsafe { CFNumberGetValue(self.0, CFNumberType::Int64, &mut value as *mut _ as *mut c_void) };
         if ok {
             Some(value)
         } else {
@@ -315,9 +301,7 @@ impl CfNumber {
     /// 转换为 f64
     pub fn as_f64(&self) -> Option<f64> {
         let mut value: f64 = 0.0;
-        let ok = unsafe {
-            CFNumberGetValue(self.0, CFNumberType::Float64, &mut value as *mut _ as *mut c_void)
-        };
+        let ok = unsafe { CFNumberGetValue(self.0, CFNumberType::Float64, &mut value as *mut _ as *mut c_void) };
         if ok {
             Some(value)
         } else {

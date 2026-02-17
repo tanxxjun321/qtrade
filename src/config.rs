@@ -385,10 +385,9 @@ fn default_page_size() -> usize {
 impl AppConfig {
     /// 从文件加载配置
     pub fn load(path: &Path) -> Result<Self> {
-        let content = std::fs::read_to_string(path)
-            .with_context(|| format!("Failed to read config file: {}", path.display()))?;
-        let config: AppConfig =
-            toml::from_str(&content).with_context(|| "Failed to parse config TOML")?;
+        let content =
+            std::fs::read_to_string(path).with_context(|| format!("Failed to read config file: {}", path.display()))?;
+        let config: AppConfig = toml::from_str(&content).with_context(|| "Failed to parse config TOML")?;
         Ok(config)
     }
 

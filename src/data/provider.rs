@@ -214,9 +214,7 @@ impl OcrProvider {
         // CG 截图和 Vision OCR 都是同步 API，放到阻塞线程池
         let prev_hash = self.last_image_hash.clone();
         let grid_frame = self.cached_grid_frame;
-        let result = tokio::task::spawn_blocking(move || {
-            ocr::ocr_capture_and_parse(pid, &prev_hash, grid_frame)
-        })
+        let result = tokio::task::spawn_blocking(move || ocr::ocr_capture_and_parse(pid, &prev_hash, grid_frame))
             .await
             .map_err(|e| anyhow::anyhow!("spawn_blocking failed: {}", e))??;
 
@@ -243,14 +241,18 @@ impl OcrProvider {
         // Layer 2: 自选股白名单过滤（plist 变化时才重新加载）
         let (whitelist, unknown_codes) = self.get_whitelist();
         let ocr_total = result.quotes.len();
-        let accepted: Vec<_> = result.quotes.into_iter()
+        let accepted: Vec<_> = result
+            .quotes
+            .into_iter()
             .filter(|q| whitelist.contains(&q.code) || unknown_codes.contains(&q.code.code))
             .collect();
         let filtered_count = ocr_total - accepted.len();
         if filtered_count > 0 {
             info!(
                 "Whitelist: {} accepted, {} filtered (of {} OCR)",
-                accepted.len(), filtered_count, ocr_total
+                accepted.len(),
+                filtered_count,
+                ocr_total
             );
         }
 
@@ -261,22 +263,23 @@ impl OcrProvider {
     /// 获取白名单（plist mtime 未变时返回缓存）
     fn get_whitelist(&mut self) -> (&HashSet<StockCode>, &HashSet<String>) {
         let need_reload = match &self.whitelist_cache {
-            Some((path, cached_mtime, _, _)) => {
-                path.metadata()
-                    .and_then(|m| m.modified())
-                    .map(|mtime| mtime != *cached_mtime)
-                    .unwrap_or(true)
-            }
+            Some((path, cached_mtime, _, _)) => path
+                .metadata()
+                .and_then(|m| m.modified())
+                .map(|mtime| mtime != *cached_mtime)
+                .unwrap_or(true),
             None => true,
         };
 
         if need_reload {
             match crate::futu::watchlist::load_watchlist_codes() {
                 Ok((path, codes)) => {
-                    let mtime = path.metadata()
+                    let mtime = path
+                        .metadata()
                         .and_then(|m| m.modified())
                         .unwrap_or(SystemTime::UNIX_EPOCH);
-                    let unknown_codes: HashSet<String> = codes.iter()
+                    let unknown_codes: HashSet<String> = codes
+                        .iter()
                         .filter(|c| c.market == Market::Unknown)
                         .map(|c| c.code.clone())
                         .collect();
@@ -287,10 +290,8 @@ impl OcrProvider {
                 Err(e) => {
                     warn!("Failed to load watchlist for whitelist: {}", e);
                     if self.whitelist_cache.is_none() {
-                        self.whitelist_cache = Some((
-                            PathBuf::new(), SystemTime::UNIX_EPOCH,
-                            HashSet::new(), HashSet::new(),
-                        ));
+                        self.whitelist_cache =
+                            Some((PathBuf::new(), SystemTime::UNIX_EPOCH, HashSet::new(), HashSet::new()));
                     }
                 }
             }
@@ -322,10 +323,7 @@ impl DataProviderKind {
         match config.data_source.source.as_str() {
             "openapi" => {
                 info!("Using FutuOpenD OpenAPI data source");
-                DataProviderKind::OpenApi(OpenApiProvider::new(
-                    &config.futu.opend_host,
-                    config.futu.opend_port,
-                ))
+                DataProviderKind::OpenApi(OpenApiProvider::new(&config.futu.opend_host, config.futu.opend_port))
             }
             "ocr" => {
                 info!("Using window screenshot + Vision OCR data source");

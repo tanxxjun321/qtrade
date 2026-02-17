@@ -59,8 +59,7 @@ impl AccessibilityReader {
 
     /// 查找富途牛牛 App 的进程 ID
     pub fn find_futu_pid() -> Result<i32> {
-        Application::find_futu_pid()
-            .map_err(|e| anyhow::anyhow!("查找富途牛牛进程失败: {}", e))
+        Application::find_futu_pid().map_err(|e| anyhow::anyhow!("查找富途牛牛进程失败: {}", e))
     }
 
     /// 连接到富途 App（查找 PID + 创建 AX 引用）
@@ -68,15 +67,12 @@ impl AccessibilityReader {
         if !Self::check_permission() {
             warn!("辅助功能权限未授权，正在请求...");
             Self::request_permission();
-            anyhow::bail!(
-                "需要辅助功能权限。请在 系统偏好设置 → 隐私与安全性 → 辅助功能 中授权 qtrade。"
-            );
+            anyhow::bail!("需要辅助功能权限。请在 系统偏好设置 → 隐私与安全性 → 辅助功能 中授权 qtrade。");
         }
 
         let pid = Self::find_futu_pid()?;
-        let app = Application::new(pid)
-            .map_err(|e| anyhow::anyhow!("无法连接到富途应用: {}", e))?;
-        
+        let app = Application::new(pid).map_err(|e| anyhow::anyhow!("无法连接到富途应用: {}", e))?;
+
         self.futu_pid = Some(pid);
         self.app = Some(app);
         info!("Connected to Futu app (PID: {})", pid);
@@ -85,17 +81,13 @@ impl AccessibilityReader {
 
     /// 从 App 窗口读取行情数据
     pub fn read_quotes(&self) -> Result<Vec<QuoteSnapshot>> {
-        let app = self
-            .app
-            .as_ref()
-            .context("Not connected. Call connect() first.")?;
+        let app = self.app.as_ref().context("Not connected. Call connect() first.")?;
 
         let mut quotes = Vec::new();
 
         // 获取窗口列表
-        let windows = app.windows()
-            .map_err(|e| anyhow::anyhow!("获取窗口列表失败: {}", e))?;
-        
+        let windows = app.windows().map_err(|e| anyhow::anyhow!("获取窗口列表失败: {}", e))?;
+
         debug!("Found {} windows", windows.len());
 
         // 遍历窗口，查找行情数据
@@ -111,19 +103,15 @@ impl AccessibilityReader {
 
     /// 获取辅助功能元素树摘要（调试用）
     pub fn dump_element_tree(&self) -> Result<String> {
-        let app = self
-            .app
-            .as_ref()
-            .context("Not connected. Call connect() first.")?;
+        let app = self.app.as_ref().context("Not connected. Call connect() first.")?;
 
         let mut output = String::new();
 
         // 扫描 AXWindow 的所有直接子元素，找出含价格信息的元素
         output.push_str("=== 扫描 AXWindow 所有子元素 ===\n");
-        
-        let windows = app.windows()
-            .map_err(|e| anyhow::anyhow!("获取窗口列表失败: {}", e))?;
-        
+
+        let windows = app.windows().map_err(|e| anyhow::anyhow!("获取窗口列表失败: {}", e))?;
+
         for (w, window) in windows.iter().enumerate().take(3) {
             output.push_str(&format!("--- Window {} ---\n", w));
 
@@ -139,10 +127,7 @@ impl AccessibilityReader {
 
                         // 只打印有值的元素
                         if value.is_some() || title.is_some() {
-                            output.push_str(&format!(
-                                "  [{}] {} val={:?} title={:?}\n",
-                                i, role, value, title
-                            ));
+                            output.push_str(&format!("  [{}] {} val={:?} title={:?}\n", i, role, value, title));
                         } else if role == "AXGroup" || role == "AXSplitGroup" || role == "AXScrollArea" {
                             output.push_str(&format!("  [{}] {}\n", i, role));
                         }
@@ -153,7 +138,7 @@ impl AccessibilityReader {
                 }
             }
         }
-        
+
         Ok(output)
     }
 
@@ -172,26 +157,24 @@ impl AccessibilityReader {
     /// 通过 AX 树搜索 identifier 为 `accessibility.futu.FTQWatchStocksViewController` 的元素，
     /// 获取其屏幕坐标 frame，转换为窗口相对归一化坐标 (0.0-1.0)。
     pub fn find_watchlist_grid_frame(&self) -> Result<GridFrame> {
-        let app = self
-            .app
-            .as_ref()
-            .context("Not connected. Call connect() first.")?;
+        let app = self.app.as_ref().context("Not connected. Call connect() first.")?;
 
-        let frame = app.find_watchlist_grid_frame()
+        let frame = app
+            .find_watchlist_grid_frame()
             .map_err(|e| anyhow::anyhow!("查找自选股表格失败: {}", e))?;
-        
+
         Ok(GridFrame::from(frame))
     }
 }
 
 /// 查找自选股表格的便捷函数（供其他模块使用）
 pub fn find_watchlist_grid_frame(pid: i32) -> Result<GridFrame> {
-    let app = Application::new(pid)
-        .map_err(|e| anyhow::anyhow!("无法连接到应用: {}", e))?;
-    
-    let frame = app.find_watchlist_grid_frame()
+    let app = Application::new(pid).map_err(|e| anyhow::anyhow!("无法连接到应用: {}", e))?;
+
+    let frame = app
+        .find_watchlist_grid_frame()
         .map_err(|e| anyhow::anyhow!("查找自选股表格失败: {}", e))?;
-    
+
     Ok(GridFrame::from(frame))
 }
 
@@ -271,10 +254,7 @@ fn find_and_dump_tables(element: &Element, depth: usize, output: &mut String) {
                 Ok(attr_value) => {
                     match attr_value {
                         crate::futu::ax::CfType::Array(arr) => {
-                            output.push_str(&format!(
-                                "{}  {}: array[{}]\n",
-                                indent, attr, arr.len()
-                            ));
+                            output.push_str(&format!("{}  {}: array[{}]\n", indent, attr, arr.len()));
 
                             // 展开前 5 个元素
                             for (i, ptr) in arr.iter().take(5).enumerate() {
@@ -331,7 +311,7 @@ mod tests {
     fn test_grid_frame_from_rect() {
         let rect = Rect::new(0.1, 0.2, 0.3, 0.4);
         let grid: GridFrame = rect.into();
-        
+
         assert_eq!(grid.x, 0.1);
         assert_eq!(grid.y, 0.2);
         assert_eq!(grid.width, 0.3);
