@@ -3,54 +3,102 @@
 //! 基于 macOS Accessibility API 的 UI 自动化操作。
 //! 大部分交互通过 AX API 完成；对于 AXPress 不生效的 Qt 控件，
 //! 使用 CGEvent 前台坐标点击作为备用。
+//!
+//! 本模块现基于 `futu::ax` 安全 API 实现，保持向后兼容的函数签名。
 
+use crate::futu::ax::{action, CfType, Element};
 use anyhow::{Context, Result};
 use core_foundation::base::{CFTypeRef, TCFType};
 use core_foundation::boolean::CFBoolean;
 use core_foundation::string::CFString;
 use tracing::debug;
 
-// 额外的 AX FFI 绑定（写操作）
+// FFI declarations (仅保留 CFRetain，用于指针生命周期管理)
 extern "C" {
-    fn AXUIElementCreateApplication(pid: i32) -> CFTypeRef;
-    fn AXUIElementCopyAttributeValue(
-        element: CFTypeRef,
-        attribute: core_foundation::string::CFStringRef,
-        value: *mut CFTypeRef,
-    ) -> i32;
-    fn AXUIElementPerformAction(element: CFTypeRef, action: core_foundation::string::CFStringRef) -> i32;
-    fn AXUIElementSetAttributeValue(
-        element: CFTypeRef,
-        attribute: core_foundation::string::CFStringRef,
-        value: CFTypeRef,
-    ) -> i32;
-    fn CFGetTypeID(cf: CFTypeRef) -> core_foundation::base::CFTypeID;
-    fn CFStringGetTypeID() -> core_foundation::base::CFTypeID;
-    fn CFArrayGetTypeID() -> core_foundation::base::CFTypeID;
+    fn CFRetain(cf: CFTypeRef) -> CFTypeRef;
 }
 
-const AX_ERROR_SUCCESS: i32 = 0;
+// ===== 内部辅助函数 =====
+
+/// 将裸指针包装为 Element（不增加引用计数）
+unsafe fn element_from_raw(ptr: CFTypeRef) -> Option<Element> {
+    if ptr.is_null() {
+        None
+    } else {
+        Element::from_raw(ptr).ok()
+    }
+}
+
+/// 将 Element 转换为裸指针（不转移所有权）
+fn element_to_raw(element: CFTypeRef) -> CFTypeRef {
+    element
+}
+
+// ===== 属性获取 API（向后兼容） =====
 
 /// 获取 AX 元素的属性值
 pub fn get_attr(element: CFTypeRef, attribute: &str) -> Result<CFTypeRef> {
-    let attr_name = CFString::new(attribute);
-    let mut value: CFTypeRef = std::ptr::null();
-    let result = unsafe {
-        AXUIElementCopyAttributeValue(element, attr_name.as_concrete_TypeRef(), &mut value)
-    };
-    if result != AX_ERROR_SUCCESS {
-        anyhow::bail!("AX get '{}' failed: error {}", attribute, result);
+    let elem = unsafe { element_from_raw(element) }
+        .context("Invalid element pointer")?;
+
+    match elem.attribute(attribute) {
+        Ok(cf_type) => {
+            // 需要返回裸指针，调用方负责释放
+            // 为了防止 CfType 的 Drop 实现释放内部指针，
+            // 我们对需要释放的类型调用 CFRetain
+            let ptr = match cf_type {
+                CfType::String(s) => {
+                    let p = s.as_ptr();
+                    unsafe { CFRetain(p) };
+                    p
+                }
+                CfType::Array(a) => {
+                    let p = a.as_ptr();
+                    unsafe { CFRetain(p) };
+                    p
+                }
+                CfType::Number(n) => {
+                    let p = n.as_ptr();
+                    unsafe { CFRetain(p) };
+                    p
+                }
+                CfType::Element(e) => {
+                    let p = e.as_ptr();
+                    unsafe { CFRetain(p) };
+                    p
+                }
+                CfType::Value(v) => {
+                    let p = v.as_ptr();
+                    unsafe { CFRetain(p) };
+                    p
+                }
+                CfType::Boolean(b) => {
+                    if b {
+                        CFBoolean::true_value().as_CFTypeRef()
+                    } else {
+                        CFBoolean::false_value().as_CFTypeRef()
+                    }
+                }
+                CfType::Unknown(p) => {
+                    unsafe { CFRetain(p) };
+                    p
+                }
+            };
+            Ok(ptr)
+        }
+        Err(e) => anyhow::bail!("AX get '{}' failed: {}", attribute, e),
     }
-    Ok(value)
 }
 
 /// 安全地将 CFTypeRef 转换为 String
 pub fn cftype_to_string(value: CFTypeRef) -> Option<String> {
+    use core_foundation::base::{CFGetTypeID, TCFType};
+
     if value.is_null() {
         return None;
     }
     unsafe {
-        if CFGetTypeID(value) == CFStringGetTypeID() {
+        if CFGetTypeID(value) == core_foundation::string::CFStringGetTypeID() {
             let cf_string: CFString = CFString::wrap_under_get_rule(value as *const _);
             Some(cf_string.to_string())
         } else {
@@ -61,6 +109,9 @@ pub fn cftype_to_string(value: CFTypeRef) -> Option<String> {
 
 /// 安全地检查 CFTypeRef 是否为 CFArray
 pub fn as_cf_array(value: CFTypeRef) -> Option<CFTypeRef> {
+    use core_foundation::array::CFArrayGetTypeID;
+    use core_foundation::base::CFGetTypeID;
+
     if value.is_null() {
         return None;
     }
@@ -83,68 +134,87 @@ pub fn cf_array_get(array: CFTypeRef, index: isize) -> CFTypeRef {
     unsafe { core_foundation::array::CFArrayGetValueAtIndex(array as *const _, index) }
 }
 
-/// 获取元素的 AXRole
+/// 获取元素的 AXRole（不获取所有权，适用于借用指针）
 pub fn get_role(element: CFTypeRef) -> Option<String> {
-    get_attr(element, "AXRole").ok().and_then(|v| cftype_to_string(v))
+    let elem = unsafe { element_from_raw(element) }?;
+    elem.role()
 }
 
-/// 获取元素的 AXTitle
+/// 获取元素的 AXTitle（不获取所有权，适用于借用指针）
 pub fn get_title(element: CFTypeRef) -> Option<String> {
-    get_attr(element, "AXTitle").ok().and_then(|v| cftype_to_string(v))
+    let elem = unsafe { element_from_raw(element) }?;
+    elem.title()
 }
 
-/// 获取元素的 AXValue（字符串形式）
+/// 获取元素的 AXValue（字符串形式，不获取所有权，适用于借用指针）
 pub fn get_value_str(element: CFTypeRef) -> Option<String> {
-    get_attr(element, "AXValue").ok().and_then(|v| cftype_to_string(v))
+    let elem = unsafe { element_from_raw(element) }?;
+    elem.value()
 }
 
-/// 获取元素的 AXDescription
+/// 获取元素的 AXDescription（不获取所有权，适用于借用指针）
 pub fn get_description(element: CFTypeRef) -> Option<String> {
-    get_attr(element, "AXDescription").ok().and_then(|v| cftype_to_string(v))
+    let elem = unsafe { element_from_raw(element) }?;
+    elem.description()
 }
 
-/// 获取元素的 AXIdentifier
+/// 获取元素的 AXIdentifier（不获取所有权，适用于借用指针）
 pub fn get_identifier(element: CFTypeRef) -> Option<String> {
-    get_attr(element, "AXIdentifier").ok().and_then(|v| cftype_to_string(v))
+    let elem = unsafe { element_from_raw(element) }?;
+    elem.identifier()
 }
 
 /// 获取元素的父元素
 pub fn get_parent(element: CFTypeRef) -> Option<CFTypeRef> {
-    get_attr(element, "AXParent").ok().filter(|v| !v.is_null())
+    let elem = unsafe { element_from_raw(element) }?;
+    elem.attribute("AXParent")
+        .ok()
+        .and_then(|cf_type| {
+            if let CfType::Element(e) = cf_type {
+                let p = e.as_ptr();
+                unsafe { CFRetain(p) };
+                Some(p)
+            } else {
+                None
+            }
+        })
+        .filter(|p| !p.is_null())
 }
 
 /// 获取元素的子元素数组
 fn get_children(element: CFTypeRef) -> Option<CFTypeRef> {
-    get_attr(element, "AXChildren").ok().and_then(|v| as_cf_array(v))
+    let elem = unsafe { element_from_raw(element) }?;
+    elem.attribute("AXChildren")
+        .ok()
+        .and_then(|cf_type| {
+            if let CfType::Array(a) = cf_type {
+                let p = a.as_ptr();
+                unsafe { CFRetain(p) };
+                Some(p)
+            } else {
+                None
+            }
+        })
 }
 
 // ===== 写操作 API =====
 
 /// 对 AX 元素执行操作（如 AXPress、AXRaise）
 pub fn perform_action(element: CFTypeRef, action: &str) -> Result<()> {
-    let action_name = CFString::new(action);
-    let result = unsafe { AXUIElementPerformAction(element, action_name.as_concrete_TypeRef()) };
-    if result != AX_ERROR_SUCCESS {
-        anyhow::bail!("AXPerformAction('{}') failed: error {}", action, result);
-    }
-    Ok(())
+    let elem = unsafe { element_from_raw(element) }
+        .context("Invalid element pointer")?;
+
+    elem.perform_action(action)
+        .map_err(|e| anyhow::anyhow!("AXPerformAction('{}') failed: {}", action, e))
 }
 
 /// 设置 AX 元素的文本值（AXValue 属性）
 pub fn set_text_field_value(element: CFTypeRef, text: &str) -> Result<()> {
-    let attr_name = CFString::new("AXValue");
-    let cf_text = CFString::new(text);
-    let result = unsafe {
-        AXUIElementSetAttributeValue(
-            element,
-            attr_name.as_concrete_TypeRef(),
-            cf_text.as_CFTypeRef(),
-        )
-    };
-    if result != AX_ERROR_SUCCESS {
-        anyhow::bail!("AXSetAttributeValue('AXValue', '{}') failed: error {}", text, result);
-    }
-    Ok(())
+    let elem = unsafe { element_from_raw(element) }
+        .context("Invalid element pointer")?;
+
+    elem.set_string_value(text)
+        .map_err(|e| anyhow::anyhow!("AXSetAttributeValue('AXValue', '{}') failed: {}", text, e))
 }
 
 /// 聚焦元素（设置 AXFocused = true）
@@ -154,101 +224,42 @@ pub fn focus_element(element: CFTypeRef) -> Result<()> {
 
 /// 读取布尔属性（如 AXHidden、AXMinimized）
 pub fn get_bool_attr(element: CFTypeRef, attribute: &str) -> Option<bool> {
-    let value = get_attr(element, attribute).ok()?;
-    Some(value == CFBoolean::true_value().as_CFTypeRef())
+    let elem = unsafe { element_from_raw(element) }?;
+
+    match elem.attribute(attribute) {
+        Ok(CfType::Boolean(b)) => Some(b),
+        _ => {
+            // 尝试原始方式比较
+            let value = get_attr(element, attribute).ok()?;
+            Some(value == CFBoolean::true_value().as_CFTypeRef())
+        }
+    }
 }
 
 /// 设置布尔属性
 pub fn set_bool_attr(element: CFTypeRef, attribute: &str, value: bool) -> Result<()> {
-    let attr_name = CFString::new(attribute);
-    let cf_val = if value {
-        CFBoolean::true_value()
-    } else {
-        CFBoolean::false_value()
-    };
-    let result = unsafe {
-        AXUIElementSetAttributeValue(
-            element,
-            attr_name.as_concrete_TypeRef(),
-            cf_val.as_CFTypeRef(),
-        )
-    };
-    if result != AX_ERROR_SUCCESS {
-        anyhow::bail!(
-            "AXSetAttributeValue('{}', {}) failed: error {}",
-            attribute, value, result
-        );
-    }
-    Ok(())
+    let elem = unsafe { element_from_raw(element) }
+        .context("Invalid element pointer")?;
+
+    elem.set_attribute_bool(attribute, value)
+        .map_err(|e| anyhow::anyhow!(
+            "AXSetAttributeValue('{}', {}) failed: {}",
+            attribute, value, e
+        ))
 }
 
-
-// ===== 前台坐标点击（CGEventPost to HID）=====
+// ===== 前台坐标点击（CGEventPost to HID） =====
 
 /// 通过前台 CGEvent 坐标点击元素
 ///
 /// 读取 AXPosition + AXSize 计算中心点，通过 CGEventPost(HID) 发送点击。
 /// 需要窗口已 raise 到前台。仅用于 AXPress 无效的 Qt 控件。
 pub fn click_at_element(element: CFTypeRef) -> Result<()> {
-    use core_graphics::event::{CGEvent, CGEventTapLocation, CGEventType, CGMouseButton};
-    use core_graphics::event_source::{CGEventSource, CGEventSourceStateID};
-    use core_graphics::geometry::{CGPoint, CGSize};
-    use std::ffi::c_void;
+    let elem = unsafe { element_from_raw(element) }
+        .context("Invalid element pointer")?;
 
-    extern "C" {
-        fn AXValueGetValue(value: CFTypeRef, typ: u32, out: *mut c_void) -> bool;
-    }
-
-    // 读取元素位置和大小
-    let pos_ref = get_attr(element, "AXPosition")
-        .context("无法读取 AXPosition")?;
-    let mut position = CGPoint::new(0.0, 0.0);
-    if !unsafe {
-        AXValueGetValue(pos_ref, 1, &mut position as *mut _ as *mut c_void)
-    } {
-        anyhow::bail!("AXValueGetValue(AXPosition) failed");
-    }
-
-    let size_ref = get_attr(element, "AXSize")
-        .context("无法读取 AXSize")?;
-    let mut size = CGSize::new(0.0, 0.0);
-    if !unsafe {
-        AXValueGetValue(size_ref, 2, &mut size as *mut _ as *mut c_void)
-    } {
-        anyhow::bail!("AXValueGetValue(AXSize) failed");
-    }
-
-    let center = CGPoint::new(
-        position.x + size.width / 2.0,
-        position.y + size.height / 2.0,
-    );
-    debug!("click_at_element: center=({:.0},{:.0})", center.x, center.y);
-
-    // 前台 CGEventPost
-    let source = CGEventSource::new(CGEventSourceStateID::Private)
-        .map_err(|_| anyhow::anyhow!("Failed to create CGEventSource"))?;
-
-    let mouse_down = CGEvent::new_mouse_event(
-        source.clone(),
-        CGEventType::LeftMouseDown,
-        center,
-        CGMouseButton::Left,
-    )
-    .map_err(|_| anyhow::anyhow!("Failed to create mouse down event"))?;
-
-    let mouse_up = CGEvent::new_mouse_event(
-        source,
-        CGEventType::LeftMouseUp,
-        center,
-        CGMouseButton::Left,
-    )
-    .map_err(|_| anyhow::anyhow!("Failed to create mouse up event"))?;
-
-    mouse_down.post(CGEventTapLocation::HID);
-    std::thread::sleep(std::time::Duration::from_millis(50));
-    mouse_up.post(CGEventTapLocation::HID);
-
-    Ok(())
+    action::click_at_element(&elem)
+        .map_err(|e| anyhow::anyhow!("click_at_element failed: {}", e))
 }
 
 /// 后台点击：通过 CGEventPostToPSN 将鼠标事件直接发送到指定进程
@@ -258,8 +269,7 @@ pub fn click_at_element(element: CFTypeRef) -> Result<()> {
 pub fn click_at_element_to_pid(element: CFTypeRef, pid: i32) -> Result<()> {
     use core_graphics::event::{CGEvent, CGEventType, CGMouseButton};
     use core_graphics::event_source::{CGEventSource, CGEventSourceStateID};
-    use core_graphics::geometry::{CGPoint, CGSize};
-    use std::ffi::c_void;
+    use core_graphics::geometry::CGPoint;
 
     #[repr(C)]
     #[derive(Copy, Clone)]
@@ -269,7 +279,6 @@ pub fn click_at_element_to_pid(element: CFTypeRef, pid: i32) -> Result<()> {
     }
 
     extern "C" {
-        fn AXValueGetValue(value: CFTypeRef, typ: u32, out: *mut c_void) -> bool;
         fn GetProcessForPID(pid: i32, psn: *mut ProcessSerialNumber) -> i32;
         fn CGEventPostToPSN(psn: *const ProcessSerialNumber, event: core_graphics::sys::CGEventRef);
     }
@@ -281,28 +290,16 @@ pub fn click_at_element_to_pid(element: CFTypeRef, pid: i32) -> Result<()> {
         anyhow::bail!("GetProcessForPID({}) failed: {}", pid, status);
     }
 
-    // 读取元素位置和大小
-    let pos_ref = get_attr(element, "AXPosition")
-        .context("无法读取 AXPosition")?;
-    let mut position = CGPoint::new(0.0, 0.0);
-    if !unsafe {
-        AXValueGetValue(pos_ref, 1, &mut position as *mut _ as *mut c_void)
-    } {
-        anyhow::bail!("AXValueGetValue(AXPosition) failed");
-    }
+    // 读取元素位置和大小 - 使用内部辅助获取 frame
+    let elem = unsafe { element_from_raw(element) }
+        .context("Invalid element pointer")?;
 
-    let size_ref = get_attr(element, "AXSize")
-        .context("无法读取 AXSize")?;
-    let mut size = CGSize::new(0.0, 0.0);
-    if !unsafe {
-        AXValueGetValue(size_ref, 2, &mut size as *mut _ as *mut c_void)
-    } {
-        anyhow::bail!("AXValueGetValue(AXSize) failed");
-    }
+    let frame = elem.frame()
+        .map_err(|e| anyhow::anyhow!("无法读取元素框架: {}", e))?;
 
     let center = CGPoint::new(
-        position.x + size.width / 2.0,
-        position.y + size.height / 2.0,
+        frame.x + frame.width / 2.0,
+        frame.y + frame.height / 2.0,
     );
     debug!("click_at_element_to_pid({}): center=({:.0},{:.0})", pid, center.x, center.y);
 
@@ -342,55 +339,11 @@ pub fn click_at_element_to_pid(element: CFTypeRef, pid: i32) -> Result<()> {
 /// 用于 AXIncrementor 等不接受 AXValue 直接设值的 Qt 控件。
 /// 需要窗口已 raise 到前台。
 pub fn type_value_via_paste(element: CFTypeRef, value: &str) -> Result<()> {
-    use core_graphics::event::{CGEvent, CGEventFlags, CGEventTapLocation};
-    use core_graphics::event_source::{CGEventSource, CGEventSourceStateID};
+    let elem = unsafe { element_from_raw(element) }
+        .context("Invalid element pointer")?;
 
-    // 设置剪贴板（通过 stdin 传入，避免 shell 注入）
-    let mut child = std::process::Command::new("pbcopy")
-        .stdin(std::process::Stdio::piped())
-        .spawn()
-        .context("pbcopy spawn failed")?;
-    if let Some(mut stdin) = child.stdin.take() {
-        use std::io::Write;
-        stdin.write_all(value.as_bytes()).context("write to pbcopy failed")?;
-    }
-    child.wait().context("pbcopy wait failed")?;
-
-    // 聚焦元素
-    focus_element(element)?;
-    std::thread::sleep(std::time::Duration::from_millis(50));
-
-    let source = CGEventSource::new(CGEventSourceStateID::Private)
-        .map_err(|_| anyhow::anyhow!("Failed to create CGEventSource"))?;
-
-    // Cmd+A (全选) — keycode 0 = 'a'
-    let select_all_down = CGEvent::new_keyboard_event(source.clone(), 0, true)
-        .map_err(|_| anyhow::anyhow!("Failed to create key event"))?;
-    select_all_down.set_flags(CGEventFlags::CGEventFlagCommand);
-    let select_all_up = CGEvent::new_keyboard_event(source.clone(), 0, false)
-        .map_err(|_| anyhow::anyhow!("Failed to create key event"))?;
-    select_all_up.set_flags(CGEventFlags::CGEventFlagCommand);
-
-    select_all_down.post(CGEventTapLocation::HID);
-    std::thread::sleep(std::time::Duration::from_millis(30));
-    select_all_up.post(CGEventTapLocation::HID);
-    std::thread::sleep(std::time::Duration::from_millis(50));
-
-    // Cmd+V (粘贴) — keycode 9 = 'v'
-    let paste_down = CGEvent::new_keyboard_event(source.clone(), 9, true)
-        .map_err(|_| anyhow::anyhow!("Failed to create key event"))?;
-    paste_down.set_flags(CGEventFlags::CGEventFlagCommand);
-    let paste_up = CGEvent::new_keyboard_event(source, 9, false)
-        .map_err(|_| anyhow::anyhow!("Failed to create key event"))?;
-    paste_up.set_flags(CGEventFlags::CGEventFlagCommand);
-
-    paste_down.post(CGEventTapLocation::HID);
-    std::thread::sleep(std::time::Duration::from_millis(30));
-    paste_up.post(CGEventTapLocation::HID);
-    std::thread::sleep(std::time::Duration::from_millis(100));
-
-    debug!("已通过 Cmd+V 输入: {}", value);
-    Ok(())
+    action::set_string_value_via_paste(&elem, value)
+        .map_err(|e| anyhow::anyhow!("type_value_via_paste failed: {}", e))
 }
 
 // ===== 元素搜索 API =====
@@ -409,6 +362,17 @@ pub enum Matcher<'a> {
     Any,
 }
 
+/// 将旧版 Matcher 转换为新版 action::Matcher
+fn to_new_matcher<'a>(matcher: &'a Matcher<'a>) -> action::Matcher<'a> {
+    match matcher {
+        Matcher::Title(s) => action::Matcher::Title(s),
+        Matcher::TitleContains(s) => action::Matcher::TitleContains(s),
+        Matcher::Identifier(s) => action::Matcher::Identifier(s),
+        Matcher::Description(s) => action::Matcher::Description(s),
+        Matcher::Any => action::Matcher::Any,
+    }
+}
+
 /// AX 树广度优先搜索
 ///
 /// 从 root 开始，搜索匹配 role + matcher 的元素。
@@ -419,53 +383,15 @@ pub fn find_element(
     matcher: &Matcher,
     max_depth: usize,
 ) -> Option<CFTypeRef> {
-    find_element_recursive(root, role, matcher, 0, max_depth)
-}
+    let root_elem = unsafe { element_from_raw(root) }?;
+    let new_matcher = to_new_matcher(matcher);
 
-fn find_element_recursive(
-    element: CFTypeRef,
-    target_role: &str,
-    matcher: &Matcher,
-    depth: usize,
-    max_depth: usize,
-) -> Option<CFTypeRef> {
-    if element.is_null() || depth > max_depth {
-        return None;
-    }
-
-    // 检查当前元素
-    if let Some(role) = get_role(element) {
-        if role == target_role && matches_element(element, matcher) {
-            return Some(element);
-        }
-    }
-
-    // 递归搜索子元素
-    if let Some(children) = get_children(element) {
-        let count = cf_array_count(children);
-        for i in 0..count.min(200) {
-            let child = cf_array_get(children, i);
-            if let Some(found) =
-                find_element_recursive(child, target_role, matcher, depth + 1, max_depth)
-            {
-                return Some(found);
-            }
-        }
-    }
-
-    None
-}
-
-fn matches_element(element: CFTypeRef, matcher: &Matcher) -> bool {
-    match matcher {
-        Matcher::Title(expected) => get_title(element).as_deref() == Some(expected),
-        Matcher::TitleContains(substr) => {
-            get_title(element).map_or(false, |t| t.contains(substr))
-        }
-        Matcher::Identifier(expected) => get_identifier(element).as_deref() == Some(expected),
-        Matcher::Description(expected) => get_description(element).as_deref() == Some(expected),
-        Matcher::Any => true,
-    }
+    action::find_element_with_matcher(&root_elem, role, &new_matcher, max_depth)
+        .map(|e| {
+            let ptr = e.as_ptr();
+            unsafe { CFRetain(ptr) };
+            ptr
+        })
 }
 
 /// 按 AXTitle 匹配搜索元素
@@ -485,36 +411,20 @@ pub fn find_all_elements(
     matcher: &Matcher,
     max_depth: usize,
 ) -> Vec<CFTypeRef> {
-    let mut results = Vec::new();
-    find_all_recursive(root, role, matcher, 0, max_depth, &mut results);
-    results
-}
+    let root_elem = match unsafe { element_from_raw(root) } {
+        Some(e) => e,
+        None => return Vec::new(),
+    };
+    let new_matcher = to_new_matcher(matcher);
 
-fn find_all_recursive(
-    element: CFTypeRef,
-    target_role: &str,
-    matcher: &Matcher,
-    depth: usize,
-    max_depth: usize,
-    results: &mut Vec<CFTypeRef>,
-) {
-    if element.is_null() || depth > max_depth {
-        return;
-    }
-
-    if let Some(role) = get_role(element) {
-        if role == target_role && matches_element(element, matcher) {
-            results.push(element);
-        }
-    }
-
-    if let Some(children) = get_children(element) {
-        let count = cf_array_count(children);
-        for i in 0..count.min(200) {
-            let child = cf_array_get(children, i);
-            find_all_recursive(child, target_role, matcher, depth + 1, max_depth, results);
-        }
-    }
+    action::find_all_elements_with_matcher(&root_elem, role, &new_matcher, max_depth)
+        .iter()
+        .map(|e| {
+            let ptr = e.as_ptr();
+            unsafe { CFRetain(ptr) };
+            ptr
+        })
+        .collect()
 }
 
 /// 遍历 AXOutline 树形控件，按路径定位节点
@@ -526,8 +436,10 @@ pub fn find_tree_node(root: CFTypeRef, path: &[&str]) -> Option<CFTypeRef> {
         return None;
     }
 
+    let root_elem = unsafe { element_from_raw(root) }?;
+
     // 先找 AXOutline
-    let outline = find_element(root, "AXOutline", &Matcher::Any, 10)?;
+    let outline = root_elem.find(|e| e.role().as_deref() == Some("AXOutline"), 10)?;
 
     let mut current_parent = outline;
     let mut found_node = None;
@@ -536,57 +448,51 @@ pub fn find_tree_node(root: CFTypeRef, path: &[&str]) -> Option<CFTypeRef> {
         found_node = None;
 
         // 搜索当前层级的 AXRow 子节点
-        let rows = if level == 0 {
+        let rows: Vec<Element> = if level == 0 {
             // 顶级：搜索 outline 下所有 AXRow
-            find_all_elements(current_parent, "AXRow", &Matcher::Any, 2)
+            current_parent.find_all(|e| e.role().as_deref() == Some("AXRow"), 2)
         } else {
             // 子级：搜索当前节点的子 AXRow
-            if let Some(children) = get_children(current_parent) {
-                let count = cf_array_count(children);
-                let mut child_rows = Vec::new();
-                for i in 0..count {
-                    let child = cf_array_get(children, i);
-                    if get_role(child).as_deref() == Some("AXRow") {
-                        child_rows.push(child);
+            let mut child_rows = Vec::new();
+            if let Ok(children) = current_parent.children() {
+                for child in &children {
+                    if child.role().as_deref() == Some("AXRow") {
+                        child_rows.push(child.clone());
                     }
                     // 也搜索 AXGroup 等中间容器
-                    if let Some(sub_children) = get_children(child) {
-                        let sub_count = cf_array_count(sub_children);
-                        for j in 0..sub_count {
-                            let sub = cf_array_get(sub_children, j);
-                            if get_role(sub).as_deref() == Some("AXRow") {
-                                child_rows.push(sub);
+                    if let Ok(sub_children) = child.children() {
+                        for sub in &sub_children {
+                            if sub.role().as_deref() == Some("AXRow") {
+                                child_rows.push(sub.clone());
                             }
                         }
                     }
                 }
-                child_rows
-            } else {
-                Vec::new()
             }
+            child_rows
         };
 
         for row in &rows {
             // AXRow 的 title 可能在 row 本身或其子 AXStaticText 中
-            let row_title = get_title(*row)
-                .or_else(|| get_value_str(*row))
+            let row_title = row.title()
+                .or_else(|| row.value())
                 .or_else(|| {
                     // 搜索子元素中的 AXStaticText
-                    find_element(*row, "AXStaticText", &Matcher::Any, 3)
-                        .and_then(|st| get_value_str(st).or_else(|| get_title(st)))
+                    row.find(|e| e.role().as_deref() == Some("AXStaticText"), 3)
+                        .and_then(|st| st.value().or_else(|| st.title()))
                 });
 
             if let Some(ref title) = row_title {
                 if title.contains(target_title) {
                     debug!("Tree node matched: level={} target='{}' found='{}'", level, target_title, title);
-                    found_node = Some(*row);
+                    found_node = Some(row.clone());
                     break;
                 }
             }
         }
 
         match found_node {
-            Some(node) => current_parent = node,
+            Some(ref node) => current_parent = node.clone(),
             None => {
                 debug!("Tree node not found: level={} target='{}'", level, target_title);
                 return None;
@@ -594,7 +500,11 @@ pub fn find_tree_node(root: CFTypeRef, path: &[&str]) -> Option<CFTypeRef> {
         }
     }
 
-    found_node
+    found_node.map(|e| {
+        let ptr = e.as_ptr();
+        unsafe { CFRetain(ptr) };
+        ptr
+    })
 }
 
 /// 轮询等待元素出现
@@ -629,26 +539,37 @@ pub async fn wait_for_element(
 ///
 /// 在 parent 下搜索所有 AXTextField，找到其附近包含 label_text 的那个。
 pub fn find_text_field_by_label(parent: CFTypeRef, label_text: &str) -> Option<CFTypeRef> {
+    let parent_elem = unsafe { element_from_raw(parent) }?;
+
     // 搜索所有 AXTextField，检查其 AXDescription 或附近的标签
-    let fields = find_all_elements(parent, "AXTextField", &Matcher::Any, 10);
+    let fields = parent_elem.find_all_by_role("AXTextField", 10);
+
     for field in &fields {
         // 检查 AXDescription 或 AXLabel
-        if let Some(desc) = get_description(*field) {
+        if let Some(desc) = field.description() {
             if desc.contains(label_text) {
-                return Some(*field);
+                let ptr = field.as_ptr();
+                unsafe { CFRetain(ptr) };
+                return Some(ptr);
             }
         }
-        if let Some(title) = get_title(*field) {
+        if let Some(title) = field.title() {
             if title.contains(label_text) {
-                return Some(*field);
+                let ptr = field.as_ptr();
+                unsafe { CFRetain(ptr) };
+                return Some(ptr);
             }
         }
         // 检查 AXTitleUIElement 指向的标签
-        if let Ok(title_elem) = get_attr(*field, "AXTitleUIElement") {
-            if !title_elem.is_null() {
-                if let Some(label_val) = get_title(title_elem).or_else(|| get_value_str(title_elem)) {
-                    if label_val.contains(label_text) {
-                        return Some(*field);
+        if let Ok(title_elem_cf) = field.attribute("AXTitleUIElement") {
+            if let CfType::Element(title_elem) = title_elem_cf {
+                if let Some(title_elem_ref) = unsafe { element_from_raw(title_elem.as_ptr()) } {
+                    if let Some(label_val) = title_elem_ref.title().or_else(|| title_elem_ref.value()) {
+                        if label_val.contains(label_text) {
+                            let ptr = field.as_ptr();
+                            unsafe { CFRetain(ptr) };
+                            return Some(ptr);
+                        }
                     }
                 }
             }
@@ -658,16 +579,16 @@ pub fn find_text_field_by_label(parent: CFTypeRef, label_text: &str) -> Option<C
     None
 }
 
-/// 查找交易客户端（财富通V5.0体验版）的进程 ID
-///
-/// 通过 pgrep 搜索 "cft5"，再用 ps 验证进程名。
 /// 创建应用的 AX 根元素
+///
+/// 基于 `crate::futu::ax::Application` 安全 API 实现。
 pub fn create_app_element(pid: i32) -> Result<CFTypeRef> {
-    let app_ref = unsafe { AXUIElementCreateApplication(pid) };
-    if app_ref.is_null() {
-        anyhow::bail!("Failed to create AXUIElement for PID {}", pid);
-    }
-    Ok(app_ref)
+    let app = crate::futu::ax::Application::new(pid)
+        .map_err(|e| anyhow::anyhow!("Failed to create AXUIElement for PID {}: {:?}", pid, e))?;
+    // 返回元素指针，增加引用计数确保生命周期
+    let ptr = app.element().as_ptr();
+    unsafe { CFRetain(ptr) };
+    Ok(ptr)
 }
 
 /// 激活（raise）窗口
@@ -677,22 +598,27 @@ pub fn raise_window(window: CFTypeRef) -> Result<()> {
 
 /// 调试：打印元素及其子元素的简要信息
 pub fn dump_element_brief(element: CFTypeRef, max_depth: usize) -> String {
+    let elem = match unsafe { element_from_raw(element) } {
+        Some(e) => e,
+        None => return "<invalid element>".to_string(),
+    };
+
     let mut output = String::new();
-    dump_brief_recursive(element, 0, max_depth, &mut output);
+    dump_brief_recursive(&elem, 0, max_depth, &mut output);
     output
 }
 
-fn dump_brief_recursive(element: CFTypeRef, depth: usize, max_depth: usize, output: &mut String) {
-    if element.is_null() || depth > max_depth {
+fn dump_brief_recursive(element: &Element, depth: usize, max_depth: usize, output: &mut String) {
+    if depth > max_depth {
         return;
     }
 
     let indent = "  ".repeat(depth);
-    let role = get_role(element).unwrap_or_else(|| "?".to_string());
-    let title = get_title(element);
-    let value = get_value_str(element);
-    let desc = get_description(element);
-    let ident = get_identifier(element);
+    let role = element.role().unwrap_or_else(|| "?".to_string());
+    let title = element.title();
+    let value = element.value();
+    let desc = element.description();
+    let ident = element.identifier();
 
     output.push_str(&format!("{}{}", indent, role));
     if let Some(t) = title {
@@ -710,10 +636,9 @@ fn dump_brief_recursive(element: CFTypeRef, depth: usize, max_depth: usize, outp
     }
     output.push('\n');
 
-    if let Some(children) = get_children(element) {
-        let count = cf_array_count(children);
-        for i in 0..count.min(50) {
-            let child = cf_array_get(children, i);
+    if let Ok(children) = element.children() {
+        let count = children.len();
+        for child in children.iter().take(50) {
             dump_brief_recursive(child, depth + 1, max_depth, output);
         }
         if count > 50 {

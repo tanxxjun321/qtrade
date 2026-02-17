@@ -210,14 +210,26 @@ impl ServerHandler for QtradeMcpServer {
 // ===== 行情查询（只读） =====
 
 fn get_quote_sync(stock_code: &str) -> anyhow::Result<String> {
-    let pid = crate::trading::executor::find_cft5_pid()?;
-    let app = crate::futu::ax_action::create_app_element(pid)?;
-    let window = crate::trading::executor::get_cft5_main_window(app)?;
+    use crate::futu::ax::{action, Application};
 
-    let elements = crate::futu::ax_action::find_all_elements(
-        window,
+    let pid = crate::trading::executor::find_cft5_pid()?;
+    let app = Application::new(pid).map_err(|e| anyhow::anyhow!("无法连接应用: {:?}", e))?;
+
+    // Get main window using the new safe API
+    let windows = app.windows().map_err(|e| anyhow::anyhow!("无法获取窗口: {:?}", e))?;
+    if windows.is_empty() {
+        return Ok(format!("财富通没有打开窗口"));
+    }
+
+    // Find the main window (standard window, not dialog)
+    let window = windows.into_iter().find(|w| {
+        w.subrole().as_deref() != Some("AXDialog")
+    }).ok_or_else(|| anyhow::anyhow!("未找到主窗口"))?;
+
+    let elements = action::find_all_elements_with_matcher(
+        &window,
         "AXStaticText",
-        &crate::futu::ax_action::Matcher::TitleContains(stock_code),
+        &action::Matcher::TitleContains(stock_code),
         10,
     );
 
@@ -232,9 +244,7 @@ fn get_quote_sync(stock_code: &str) -> anyhow::Result<String> {
     info_parts.push(format!("股票代码: {}", stock_code));
 
     for elem in &elements {
-        if let Some(text) = crate::futu::ax_action::get_title(*elem)
-            .or_else(|| crate::futu::ax_action::get_value_str(*elem))
-        {
+        if let Some(text) = action::get_element_text(elem) {
             info_parts.push(format!("找到: {}", text));
         }
     }

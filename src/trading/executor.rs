@@ -5,12 +5,11 @@
 //! 安全不变量：验价通过后才点击确认，任何步骤失败自动清理弹窗。
 
 use anyhow::{Context, Result};
-use core_foundation::base::CFTypeRef;
 use serde::{Deserialize, Serialize};
 use tracing::{debug, info, warn};
 
 use crate::futu::accessibility::AccessibilityReader;
-use crate::futu::ax_action;
+use crate::futu::ax::{self, Element};
 
 /// 交易方向
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -202,18 +201,18 @@ fn execute_order_sync(
     let window = prepare_trading_window(pid).context("无法获取交易窗口")?;
 
     // 导航到目标面板
-    navigate_to_panel(window, side, market)?;
+    navigate_to_panel(&window, side, market)?;
 
     let prec = market.price_decimals();
     let currency = market.currency();
 
     // T1: 输入证券代码
     // 布局：AXStaticText value="证券代码" → 下一个 AXTextField
-    let code_field = find_field_after_label(window, "证券代码", "AXTextField")
+    let code_field = find_field_after_label(&window, "证券代码", "AXTextField")
         .context("未找到证券代码输入框")?;
-    ax_action::focus_element(code_field)?;
-    ax_action::set_text_field_value(code_field, stock_code).context("输入证券代码失败")?;
-    let readback = ax_action::get_value_str(code_field).unwrap_or_default();
+    code_field.set_focused(true).context("聚焦代码输入框失败")?;
+    code_field.set_string_value(stock_code).context("输入证券代码失败")?;
+    let readback = code_field.value().unwrap_or_default();
     debug!("已输入代码: {} (readback={})", stock_code, readback);
 
     // 等待代码解析（服务器查询股票信息）
@@ -226,10 +225,10 @@ fn execute_order_sync(
         OrderSide::Sell => "卖出价格",
     };
     let price_str = format!("{:.prec$}", price, prec = prec);
-    let price_inc = find_field_after_label(window, price_label, "AXIncrementor")
+    let price_inc = find_field_after_label(&window, price_label, "AXIncrementor")
         .context(format!("未找到 '{}' 输入框", price_label))?;
-    set_incrementor_value(price_inc, &price_str).context("输入价格失败")?;
-    let price_readback = ax_action::get_value_str(price_inc).unwrap_or_default();
+    set_incrementor_value(&price_inc, &price_str).context("输入价格失败")?;
+    let price_readback = price_inc.value().unwrap_or_default();
     debug!("已输入价格: {} (readback={})", price_str, price_readback);
 
     // T3: 输入数量
@@ -239,10 +238,10 @@ fn execute_order_sync(
         OrderSide::Sell => "卖出数量",
     };
     let qty_str = quantity.to_string();
-    let qty_field = find_field_after_label(window, qty_label, "AXIncrementor")
+    let qty_field = find_field_after_label(&window, qty_label, "AXIncrementor")
         .context(format!("未找到 '{}' 输入框", qty_label))?;
-    set_incrementor_value(qty_field, &qty_str).context("输入数量失败")?;
-    let qty_readback = ax_action::get_value_str(qty_field).unwrap_or_default();
+    set_incrementor_value(&qty_field, &qty_str).context("输入数量失败")?;
+    let qty_readback = qty_field.value().unwrap_or_default();
     debug!("已输入数量: {} (readback={})", qty_str, qty_readback);
 
     // T4: 点击买入/卖出按钮
@@ -251,22 +250,20 @@ fn execute_order_sync(
         OrderSide::Buy => "买入",
         OrderSide::Sell => "卖出",
     };
-    let submit_btn = ax_action::find_element(
-        window,
-        "AXButton",
-        &ax_action::Matcher::TitleContains(submit_label),
-        10,
-    )
+    let submit_btn = window.find(|e| {
+        e.role().as_deref() == Some("AXButton") &&
+        e.title().map_or(false, |t| t.contains(submit_label))
+    }, 10)
     .context(format!("未找到 '{}' 按钮", submit_label))?;
 
-    let btn_title = ax_action::get_title(submit_btn).unwrap_or_default();
+    let btn_title = submit_btn.title().unwrap_or_default();
     debug!("找到提交按钮: \"{}\"", btn_title);
     // 先尝试 AXPress，失败则用前台坐标点击
-    if ax_action::perform_action(submit_btn, "AXPress").is_err() {
+    if submit_btn.click().is_err() {
         debug!("AXPress 失败，使用前台坐标点击");
-        let _ = ax_action::raise_window(window);
+        let _ = window.perform_action("AXRaise");
         std::thread::sleep(std::time::Duration::from_millis(100));
-        ax_action::click_at_element(submit_btn)
+        ax::action::click_at_element(&submit_btn)
             .context(format!("点击 '{}' 按钮失败", submit_label))?;
     }
 
@@ -275,17 +272,17 @@ fn execute_order_sync(
     debug!("确认弹窗已出现");
 
     // T6: AX 验价 — 从弹窗 AXStaticText 中提取并比对代码和价格
-    let verified = verify_dialog_content(confirm_dialog, stock_code, price, market)?;
+    let verified = verify_dialog_content(&confirm_dialog, stock_code, price, market)?;
     if !verified {
         // 价格不匹配，取消
-        try_cancel_dialog(confirm_dialog);
+        try_cancel_dialog(&confirm_dialog);
         anyhow::bail!("AX 验价失败：弹窗内容与预期不符");
     }
     debug!("验价通过");
 
     // T7: 点击确认按钮
-    let confirm_btn = find_confirm_button(confirm_dialog).context("未找到确认按钮")?;
-    ax_action::perform_action(confirm_btn, "AXPress").context("点击确认按钮失败")?;
+    let confirm_btn = find_confirm_button(&confirm_dialog).context("未找到确认按钮")?;
+    confirm_btn.click().context("点击确认按钮失败")?;
 
     // T8: 检查是否出现错误弹窗（如 "委托失败"/"系统正在初始化" 等）
     std::thread::sleep(std::time::Duration::from_millis(800));
@@ -311,13 +308,14 @@ fn execute_order_sync(
 /// 2. 窗口在其他桌面（Space）被挤占 → SetFrontProcess 激活到当前桌面
 /// 3. 主窗口已关闭（仅剩状态栏图标）→ 点击状态栏"显示主窗口"恢复
 /// 4. 窗口被最小化 → AXMinimized = false
-fn prepare_trading_window(pid: i32) -> Result<CFTypeRef> {
-    let app = ax_action::create_app_element(pid)?;
+fn prepare_trading_window(pid: i32) -> Result<Element> {
+    let app = ax::Application::new(pid)
+        .map_err(|e| anyhow::anyhow!("Failed to create app element: {:?}", e))?;
 
     // Step 1: 取消 Cmd+H 隐藏
-    if ax_action::get_bool_attr(app, "AXHidden") == Some(true) {
+    if app.is_hidden() {
         debug!("App 已隐藏，取消隐藏");
-        ax_action::set_bool_attr(app, "AXHidden", false).context("取消 App 隐藏失败")?;
+        app.set_hidden(false).context("取消 App 隐藏失败")?;
         std::thread::sleep(std::time::Duration::from_millis(300));
     }
 
@@ -325,26 +323,26 @@ fn prepare_trading_window(pid: i32) -> Result<CFTypeRef> {
     activate_app(pid);
 
     // Step 3: 获取主窗口，失败则通过状态栏图标恢复
-    let window = match get_cft5_main_window(app) {
+    let window = match get_cft5_main_window(&app) {
         Ok(w) => w,
         Err(e) => {
             debug!("获取窗口失败: {}，尝试状态栏'显示主窗口'", e);
-            show_via_tray_icon(app).context("通过状态栏'显示主窗口'恢复失败")?;
+            show_via_tray_icon(&app).context("通过状态栏'显示主窗口'恢复失败")?;
             std::thread::sleep(std::time::Duration::from_millis(500));
-            get_cft5_main_window(app)
+            get_cft5_main_window(&app)
                 .context("状态栏恢复后仍无法获取主窗口。请手动打开财富通窗口。")?
         }
     };
 
     // Step 4: 取消最小化
-    if ax_action::get_bool_attr(window, "AXMinimized") == Some(true) {
+    if window.is_minimized() {
         debug!("窗口已最小化，恢复显示");
-        ax_action::set_bool_attr(window, "AXMinimized", false).context("取消窗口最小化失败")?;
+        window.set_minimized(false).context("取消窗口最小化失败")?;
         std::thread::sleep(std::time::Duration::from_millis(300));
     }
 
     // Step 5: 激活窗口
-    ax_action::raise_window(window)?;
+    window.perform_action("AXRaise").context("激活窗口失败")?;
 
     Ok(window)
 }
@@ -384,39 +382,43 @@ fn activate_app(pid: i32) {
 ///
 /// 注意: AXMenuBarItem 不支持 AXPress (-25206)，必须用前台坐标点击。
 /// AXMenuItem 打开后支持 AXPress。
-fn show_via_tray_icon(app: CFTypeRef) -> Result<()> {
+fn show_via_tray_icon(app: &ax::Application) -> Result<()> {
     // 获取状态栏菜单
-    let extras_bar = ax_action::get_attr(app, "AXExtrasMenuBar")
-        .context("未找到状态栏图标（AXExtrasMenuBar）")?;
+    let extras_bar = app.element().attribute("AXExtrasMenuBar")
+        .map_err(|e| anyhow::anyhow!("未找到状态栏图标（AXExtrasMenuBar）: {:?}", e))?;
 
-    let children = ax_action::get_attr(extras_bar, "AXChildren")
-        .ok()
-        .and_then(|v| ax_action::as_cf_array(v))
-        .context("状态栏无菜单项")?;
+    let extras_bar_elem = match extras_bar {
+        ax::CfType::Element(e) => ax::Element::from_wrapper(e),
+        _ => anyhow::bail!("AXExtrasMenuBar 不是元素类型"),
+    };
 
-    let count = ax_action::cf_array_count(children);
-    if count == 0 {
+    let children = match extras_bar_elem.children() {
+        Ok(children) => children,
+        _ => anyhow::bail!("状态栏无菜单项"),
+    };
+
+    if children.is_empty() {
         anyhow::bail!("状态栏无菜单项");
     }
 
+    // 获取第一个菜单项
+    let tray_item = children.into_iter().next().context("获取状态栏菜单项失败")?;
+
     // 前台坐标点击状态栏图标（AXPress 不支持 -25206）
-    let tray_item = ax_action::cf_array_get(children, 0);
-    ax_action::click_at_element(tray_item).context("点击状态栏图标失败")?;
+    ax::action::click_at_element(&tray_item).context("点击状态栏图标失败")?;
     std::thread::sleep(std::time::Duration::from_millis(500));
 
     // 搜索"显示主窗口"菜单项
-    let menu_item = ax_action::find_element(
-        tray_item,
-        "AXMenuItem",
-        &ax_action::Matcher::TitleContains("主窗口"),
-        5,
-    )
+    let menu_item = tray_item.find(|e| {
+        e.role().as_deref() == Some("AXMenuItem") &&
+        e.title().map_or(false, |t| t.contains("主窗口"))
+    }, 5)
     .context("未找到'显示主窗口'菜单项")?;
 
     // AXMenuItem 支持 AXPress，失败则降级坐标点击
-    if ax_action::perform_action(menu_item, "AXPress").is_err() {
+    if menu_item.click().is_err() {
         debug!("AXPress 菜单项失败，降级坐标点击");
-        ax_action::click_at_element(menu_item).context("点击'显示主窗口'失败")?;
+        ax::action::click_at_element(&menu_item).context("点击'显示主窗口'失败")?;
     }
     debug!("已通过状态栏图标显示主窗口");
 
@@ -428,7 +430,7 @@ fn show_via_tray_icon(app: CFTypeRef) -> Result<()> {
 ///
 /// HK: 港股通 tab → "港股买入"/"港股卖出" (AXStaticText, 前台 HID 点击)
 /// CN: 股票 tab → "证券买入"/"证券卖出" (AXStaticText, 前台 HID 点击)
-fn navigate_to_panel(window: CFTypeRef, side: OrderSide, market: TradingMarket) -> Result<()> {
+fn navigate_to_panel(window: &Element, side: OrderSide, market: TradingMarket) -> Result<()> {
     let (tab_title, target_label, target_role) = match market {
         TradingMarket::HK => {
             let label = match side {
@@ -449,13 +451,11 @@ fn navigate_to_panel(window: CFTypeRef, side: OrderSide, market: TradingMarket) 
     // 先尝试直接找到目标元素
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
     loop {
-        if let Some(elem) = ax_action::find_element(
-            window,
-            target_role,
-            &ax_action::Matcher::Title(target_label),
-            12,
-        ) {
-            click_panel_element(window, elem, target_label)?;
+        if let Some(elem) = window.find(|e| {
+            e.role().as_deref() == Some(target_role) &&
+            e.title().as_deref() == Some(target_label)
+        }, 12) {
+            click_panel_element(window, &elem, target_label)?;
             std::thread::sleep(std::time::Duration::from_millis(1500));
             return Ok(());
         }
@@ -467,26 +467,22 @@ fn navigate_to_panel(window: CFTypeRef, side: OrderSide, market: TradingMarket) 
     }
 
     // 切换到目标 tab
-    if let Some(tab) = ax_action::find_element(
-        window,
-        "AXRadioButton",
-        &ax_action::Matcher::Title(tab_title),
-        12,
-    ) {
-        let selected = ax_action::get_value_str(tab).map_or(false, |v| v == "1" || v == "true");
+    if let Some(tab) = window.find(|e| {
+        e.role().as_deref() == Some("AXRadioButton") &&
+        e.title().as_deref() == Some(tab_title)
+    }, 12) {
+        let selected = tab.value().map_or(false, |v| v == "1" || v == "true");
         if !selected {
             debug!("切换到 '{}' tab", tab_title);
-            ax_action::perform_action(tab, "AXPress")
+            tab.click()
                 .context(format!("点击 '{}' tab 失败", tab_title))?;
             std::thread::sleep(std::time::Duration::from_millis(800));
 
-            if let Some(elem) = ax_action::find_element(
-                window,
-                target_role,
-                &ax_action::Matcher::Title(target_label),
-                12,
-            ) {
-                click_panel_element(window, elem, target_label)?;
+            if let Some(elem) = window.find(|e| {
+                e.role().as_deref() == Some(target_role) &&
+                e.title().as_deref() == Some(target_label)
+            }, 12) {
+                click_panel_element(window, &elem, target_label)?;
                 std::thread::sleep(std::time::Duration::from_millis(1500));
                 return Ok(());
             }
@@ -501,37 +497,20 @@ fn navigate_to_panel(window: CFTypeRef, side: OrderSide, market: TradingMarket) 
 }
 
 /// 点击面板导航元素（AXStaticText, 前台 HID 坐标点击）
-fn click_panel_element(window: CFTypeRef, elem: CFTypeRef, label: &str) -> Result<()> {
-    let _ = ax_action::raise_window(window);
+fn click_panel_element(window: &Element, elem: &Element, label: &str) -> Result<()> {
+    let _ = window.perform_action("AXRaise");
     std::thread::sleep(std::time::Duration::from_millis(200));
-    ax_action::click_at_element(elem).context(format!("点击 '{}' 失败", label))
+    ax::action::click_at_element(elem).context(format!("点击 '{}' 失败", label))
 }
 
 /// 设置 AXIncrementor 的值
 ///
 /// 优先后台：找到内部 AXTextField 子元素，直接 SetAttributeValue。
 /// 降级前台：若无子 TextField 或设值未同步，用 Cmd+V 粘贴。
-fn set_incrementor_value(incrementor: CFTypeRef, value: &str) -> Result<()> {
-    // 尝试找内部 AXTextField（后台设值）
-    if let Some(text_field) =
-        ax_action::find_element(incrementor, "AXTextField", &ax_action::Matcher::Any, 3)
-    {
-        ax_action::focus_element(text_field)?;
-        ax_action::set_text_field_value(text_field, value)?;
-        std::thread::sleep(std::time::Duration::from_millis(100));
-        let readback = ax_action::get_value_str(text_field).unwrap_or_default();
-        let inc_readback = ax_action::get_value_str(incrementor).unwrap_or_default();
-        if inc_readback.contains(value) || readback.contains(value) {
-            debug!("AXIncrementor 后台设值成功: {}", value);
-            return Ok(());
-        }
-        warn!(
-            "AXIncrementor 子TextField 设值后未同步 (readback={}), 降级前台粘贴",
-            inc_readback
-        );
-    }
-
-    ax_action::type_value_via_paste(incrementor, value)
+fn set_incrementor_value(incrementor: &Element, value: &str) -> Result<()> {
+    // 使用安全 API 的辅助函数
+    ax::action::set_incrementor_value(incrementor, value)
+        .map_err(|e| anyhow::anyhow!("设置 incrementor 值失败: {:?}", e))
 }
 
 /// 在表单容器中，找到标签文本后的下一个指定角色的兄弟元素
@@ -540,26 +519,18 @@ fn set_incrementor_value(incrementor: CFTypeRef, value: &str) -> Result<()> {
 /// 遍历 parent 的 children，找到 value 包含 label_text 的 AXStaticText，
 /// 然后返回其后第一个匹配 target_role 的兄弟。
 fn find_field_after_label(
-    parent: CFTypeRef,
+    parent: &Element,
     label_text: &str,
     target_role: &str,
-) -> Option<CFTypeRef> {
-    use crate::futu::ax_action::{
-        as_cf_array, cf_array_count, cf_array_get, get_attr, get_role, get_value_str,
-    };
-
-    let children = get_attr(parent, "AXChildren")
-        .ok()
-        .and_then(|v| as_cf_array(v))?;
-    let count = cf_array_count(children);
+) -> Option<Element> {
+    let children = parent.children().ok()?;
 
     let mut found_label = false;
-    for i in 0..count {
-        let child = cf_array_get(children, i);
+    for child in &children {
         if !found_label {
             // 寻找标签
-            if get_role(child).as_deref() == Some("AXStaticText") {
-                if let Some(val) = get_value_str(child) {
+            if child.role().as_deref() == Some("AXStaticText") {
+                if let Some(val) = child.value() {
                     if val.contains(label_text) {
                         found_label = true;
                         continue;
@@ -568,16 +539,15 @@ fn find_field_after_label(
             }
         } else {
             // 找到标签后，返回第一个匹配目标角色的兄弟
-            if get_role(child).as_deref() == Some(target_role) {
-                return Some(child);
+            if child.role().as_deref() == Some(target_role) {
+                return Some(child.clone());
             }
         }
     }
 
     // 如果顶层没找到，递归搜索子容器（AXGroup / AXSplitGroup）
-    for i in 0..count {
-        let child = cf_array_get(children, i);
-        let role = get_role(child).unwrap_or_default();
+    for child in &children {
+        let role = child.role().unwrap_or_default();
         if role == "AXGroup" || role == "AXSplitGroup" {
             if let Some(found) = find_field_after_label(child, label_text, target_role) {
                 return Some(found);
@@ -592,29 +562,21 @@ fn find_field_after_label(
 ///
 /// Qt 确认弹窗是独立 AXWindow（空 title, subrole=AXDialog），
 /// 直接扫描所有窗口找含确认按钮的窗口，跳过无效的主窗口搜索。
-fn wait_for_confirm_dialog(pid: i32, timeout_ms: u64) -> Option<CFTypeRef> {
+fn wait_for_confirm_dialog(pid: i32, timeout_ms: u64) -> Option<Element> {
     let start = std::time::Instant::now();
     let timeout = std::time::Duration::from_millis(timeout_ms);
     let confirm_labels = ["确认", "确定", "下单", "委托"];
 
     loop {
-        if let Ok(app) = ax_action::create_app_element(pid) {
-            if let Ok(windows) = ax_action::get_attr(app, "AXWindows") {
-                if let Some(win_arr) = ax_action::as_cf_array(windows) {
-                    let count = ax_action::cf_array_count(win_arr);
-                    for i in 0..count {
-                        let win = ax_action::cf_array_get(win_arr, i);
-                        for label in &confirm_labels {
-                            if ax_action::find_element(
-                                win,
-                                "AXButton",
-                                &ax_action::Matcher::TitleContains(label),
-                                5,
-                            )
-                            .is_some()
-                            {
-                                return Some(win);
-                            }
+        if let Ok(app) = ax::Application::new(pid) {
+            if let Ok(windows) = app.windows() {
+                for win in windows {
+                    for label in &confirm_labels {
+                        if win.find(|e| {
+                            e.role().as_deref() == Some("AXButton") &&
+                            e.title().map_or(false, |t| t.contains(label))
+                        }, 5).is_some() {
+                            return Some(win);
                         }
                     }
                 }
@@ -632,17 +594,17 @@ fn wait_for_confirm_dialog(pid: i32, timeout_ms: u64) -> Option<CFTypeRef> {
 ///
 /// 通过 AX 读取弹窗中的文本元素，检查是否包含预期代码和价格。
 fn verify_dialog_content(
-    dialog: CFTypeRef,
+    dialog: &Element,
     expected_code: &str,
     expected_price: f64,
     market: TradingMarket,
 ) -> Result<bool> {
     // 收集弹窗中所有 AXStaticText 的文本
-    let texts = ax_action::find_all_elements(dialog, "AXStaticText", &ax_action::Matcher::Any, 8);
+    let texts = dialog.find_all(|e| e.role().as_deref() == Some("AXStaticText"), 8);
 
     let mut all_text = String::new();
     for text_elem in &texts {
-        let value = get_element_text(*text_elem);
+        let value = ax::action::get_element_text(text_elem);
         if let Some(v) = value {
             all_text.push_str(&v);
             all_text.push(' ');
@@ -681,51 +643,37 @@ fn verify_dialog_content(
     Ok(true)
 }
 
-/// 从 AX 元素读取文本（value 或 title）
-fn get_element_text(element: CFTypeRef) -> Option<String> {
-    ax_action::get_value_str(element)
-        .or_else(|| ax_action::get_title(element))
-        .filter(|s| !s.is_empty())
-}
-
 /// 检查是否出现错误弹窗（"委托失败"/"关闭(C)" 等）
 ///
 /// 点击"委托"后，交易系统可能返回错误弹窗（独立 AXWindow）。
 /// 如果检测到，读取错误信息、关闭弹窗、返回错误文本。
 fn check_error_dialog(pid: i32) -> Option<String> {
-    let app = ax_action::create_app_element(pid).ok()?;
-    let windows = ax_action::get_attr(app, "AXWindows").ok()?;
-    let win_arr = ax_action::as_cf_array(windows)?;
-    let count = ax_action::cf_array_count(win_arr);
+    let app = ax::Application::new(pid).ok()?;
+    let windows = app.windows().ok()?;
 
-    for i in 0..count {
-        let win = ax_action::cf_array_get(win_arr, i);
+    for win in windows {
         // 错误弹窗特征：有"关闭"按钮，无"委托"/"确认"按钮
-        let has_close = ax_action::find_element(
-            win,
-            "AXButton",
-            &ax_action::Matcher::TitleContains("关闭"),
-            5,
-        );
+        let has_close = win.find(|e| {
+            e.role().as_deref() == Some("AXButton") &&
+            e.title().map_or(false, |t| t.contains("关闭"))
+        }, 5);
         if has_close.is_none() {
             continue;
         }
         // 排除确认弹窗（有"委托"按钮的不是错误弹窗）
-        let has_confirm = ax_action::find_element(
-            win,
-            "AXButton",
-            &ax_action::Matcher::TitleContains("委托"),
-            5,
-        );
+        let has_confirm = win.find(|e| {
+            e.role().as_deref() == Some("AXButton") &&
+            e.title().map_or(false, |t| t.contains("委托"))
+        }, 5);
         if has_confirm.is_some() {
             continue;
         }
 
         // 收集弹窗中所有文本
-        let texts = ax_action::find_all_elements(win, "AXStaticText", &ax_action::Matcher::Any, 5);
+        let texts = win.find_all(|e| e.role().as_deref() == Some("AXStaticText"), 5);
         let mut msg = String::new();
         for elem in &texts {
-            if let Some(text) = get_element_text(*elem) {
+            if let Some(text) = ax::action::get_element_text(elem) {
                 if !msg.is_empty() {
                     msg.push(' ');
                 }
@@ -735,8 +683,8 @@ fn check_error_dialog(pid: i32) -> Option<String> {
 
         if !msg.is_empty() {
             // 关闭错误弹窗
-            if let Some(btn) = has_close {
-                let _ = ax_action::perform_action(btn, "AXPress");
+            if let Some(ref btn) = has_close {
+                let _ = btn.click();
             }
             warn!("交易系统返回错误: {}", msg);
             return Some(msg);
@@ -747,17 +695,15 @@ fn check_error_dialog(pid: i32) -> Option<String> {
 }
 
 /// 尝试取消弹窗（找取消/关闭按钮并点击）
-fn try_cancel_dialog(dialog: CFTypeRef) {
+fn try_cancel_dialog(dialog: &Element) {
     // 尝试找"取消"按钮
     let cancel_labels = ["取消", "关闭", "Cancel", "Close"];
     for label in &cancel_labels {
-        if let Some(btn) = ax_action::find_element(
-            dialog,
-            "AXButton",
-            &ax_action::Matcher::TitleContains(label),
-            5,
-        ) {
-            let _ = ax_action::perform_action(btn, "AXPress");
+        if let Some(btn) = dialog.find(|e| {
+            e.role().as_deref() == Some("AXButton") &&
+            e.title().map_or(false, |t| t.contains(label))
+        }, 5) {
+            let _ = btn.click();
             debug!("已点击 '{}' 关闭弹窗", label);
             return;
         }
@@ -766,15 +712,13 @@ fn try_cancel_dialog(dialog: CFTypeRef) {
 }
 
 /// 在弹窗中找到确认/委托按钮
-fn find_confirm_button(dialog: CFTypeRef) -> Option<CFTypeRef> {
+fn find_confirm_button(dialog: &Element) -> Option<Element> {
     let confirm_labels = ["确认", "委托", "确定", "提交", "Confirm", "Submit"];
     for label in &confirm_labels {
-        if let Some(btn) = ax_action::find_element(
-            dialog,
-            "AXButton",
-            &ax_action::Matcher::TitleContains(label),
-            5,
-        ) {
+        if let Some(btn) = dialog.find(|e| {
+            e.role().as_deref() == Some("AXButton") &&
+            e.title().map_or(false, |t| t.contains(label))
+        }, 5) {
             return Some(btn);
         }
     }
@@ -818,38 +762,23 @@ pub fn find_cft5_pid() -> Result<i32> {
 }
 
 /// 获取财富通主窗口（AXStandardWindow，跳过 Dialog/浮动窗）
-pub fn get_cft5_main_window(app: CFTypeRef) -> Result<CFTypeRef> {
-    let windows = ax_action::get_attr(app, "AXWindows").context("Failed to get AXWindows")?;
-    let win_arr = ax_action::as_cf_array(windows).context("AXWindows is not an array")?;
-    let count = ax_action::cf_array_count(win_arr);
-    if count == 0 {
+pub fn get_cft5_main_window(app: &ax::Application) -> Result<Element> {
+    let windows = app.windows().context("Failed to get windows")?;
+    if windows.is_empty() {
         anyhow::bail!("No windows found");
     }
 
-    debug!("cft5 has {} window(s)", count);
+    debug!("cft5 has {} window(s)", windows.len());
 
-    let mut standard_win: Option<CFTypeRef> = None;
-    for i in 0..count {
-        let win = ax_action::cf_array_get(win_arr, i);
-        if win.is_null() {
-            continue;
-        }
-        let subrole = ax_action::get_attr(win, "AXSubrole")
-            .ok()
-            .and_then(|v| ax_action::cftype_to_string(v))
-            .unwrap_or_default();
-        if subrole == "AXStandardWindow" && standard_win.is_none() {
-            standard_win = Some(win);
+    // 找第一个标准窗口
+    for win in &windows {
+        if let Some(subrole) = win.subrole() {
+            if subrole == "AXStandardWindow" {
+                return Ok(win.clone());
+            }
         }
     }
 
-    if let Some(win) = standard_win {
-        return Ok(win);
-    }
-
-    let window = ax_action::cf_array_get(win_arr, 0);
-    if window.is_null() {
-        anyhow::bail!("First window is null");
-    }
-    Ok(window)
+    // 没找到标准窗口，返回第一个窗口
+    windows.into_iter().next().context("No windows found")
 }
