@@ -237,6 +237,11 @@ impl Application {
                     .output()
                 {
                     let comm = String::from_utf8_lossy(&check.stdout);
+                    // 排除 Futu_OpenD 等后台服务进程
+                    if comm.contains("OpenD") {
+                        debug!("Skipping Futu_OpenD process (PID: {})", pid);
+                        continue;
+                    }
                     if comm.contains(name) || comm.to_lowercase().contains(&name.to_lowercase()) {
                         info!("Found app '{}' with PID: {}", name, pid);
                         return Ok(pid);

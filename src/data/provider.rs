@@ -132,10 +132,12 @@ pub struct OcrProvider {
     whitelist_cache: Option<(PathBuf, SystemTime, HashSet<StockCode>, HashSet<String>)>,
     /// AX API 检测到的自选股表格区域（归一化坐标），用于跳过 Pass 1 快速 OCR
     cached_grid_frame: Option<GridFrame>,
+    /// 用户 ID（用于加载正确的自选股白名单）
+    user_id: Option<String>,
 }
 
 impl OcrProvider {
-    pub fn new() -> Self {
+    pub fn new(user_id: Option<String>) -> Self {
         Self {
             futu_pid: None,
             gui_pid: None,
@@ -145,6 +147,7 @@ impl OcrProvider {
             last_quotes: Vec::new(),
             whitelist_cache: None,
             cached_grid_frame: None,
+            user_id,
         }
     }
 
@@ -272,7 +275,7 @@ impl OcrProvider {
         };
 
         if need_reload {
-            match crate::futu::watchlist::load_watchlist_codes() {
+            match crate::futu::watchlist::load_watchlist_codes(self.user_id.as_deref()) {
                 Ok((path, codes)) => {
                     let mtime = path
                         .metadata()
@@ -327,7 +330,7 @@ impl DataProviderKind {
             }
             "ocr" => {
                 info!("Using window screenshot + Vision OCR data source");
-                DataProviderKind::Ocr(OcrProvider::new())
+                DataProviderKind::Ocr(OcrProvider::new(config.futu.user_id.clone()))
             }
             _ => {
                 info!("Using macOS Accessibility API data source");

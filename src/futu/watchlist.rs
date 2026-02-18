@@ -119,9 +119,9 @@ pub fn detect_plist_path(data_path: Option<&str>, user_id: Option<&str>) -> Resu
 }
 
 /// 轻量读取：只返回 plist 路径和股票代码集合（不读 StockDB），供白名单过滤用
-pub fn load_watchlist_codes() -> Result<(PathBuf, Vec<StockCode>)> {
+pub fn load_watchlist_codes(user_id: Option<&str>) -> Result<(PathBuf, Vec<StockCode>)> {
     let base_path = detect_futu_data_path()?;
-    let user_dir = find_user_dir(&base_path, None)?;
+    let user_dir = find_user_dir(&base_path, user_id)?;
     let plist_path = user_dir.join(WATCHLIST_FILENAME);
     let entries = read_watchlist(&plist_path)?;
     let codes = entries.into_iter().map(|e| e.code).collect();
