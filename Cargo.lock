@@ -393,6 +393,7 @@ checksum = "829d955a0bb380ef178a640b91779e3987da38c9aea133b20614cfed8cdea9c6"
 dependencies = [
  "bitflags",
  "crossterm_winapi",
+ "futures-core",
  "mio",
  "parking_lot",
  "rustix 0.38.44",
@@ -1822,6 +1823,7 @@ dependencies = [
  "core-graphics",
  "crossterm",
  "foreign-types 0.5.0",
+ "futures",
  "objc2",
  "objc2-app-kit",
  "objc2-core-foundation",

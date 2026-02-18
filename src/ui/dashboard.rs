@@ -2,12 +2,12 @@
 
 use std::collections::{HashMap, VecDeque};
 use std::io;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 /// 最大最近提醒数量
 pub const MAX_RECENT_ALERTS: usize = 1000;
 
-use crossterm::event::{self, Event, KeyCode, KeyEventKind};
+use crossterm::event::{KeyCode, KeyEventKind};
 use crossterm::terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen};
 use crossterm::ExecutableCommand;
 use ratatui::prelude::*;
@@ -302,19 +302,27 @@ fn render_title(frame: &mut Frame, area: Rect) {
 
 /// 渲染行情表格
 fn render_quote_table(frame: &mut Frame, area: Rect, state: &DashboardState) {
-    let header_cells = [
-        "代码",
-        "名称",
-        "现价",
-        "涨跌%",
-        "涨跌额",
-        "成交量",
-        "换手率%",
-        "振幅%",
-        "信号",
-    ]
-    .iter()
-    .map(|h| Cell::from(*h).style(Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)));
+    // 根据当前排序列和方向生成带指示器的表头
+    let sort_arrow = if state.sort_ascending { " ▲" } else { " ▼" };
+    let header_texts = [
+        ("代码", Some(SortColumn::Code)),
+        ("名称", Some(SortColumn::Name)),
+        ("现价", Some(SortColumn::Price)),
+        ("涨跌%", Some(SortColumn::ChangePct)),
+        ("涨跌额", None::<SortColumn>),
+        ("成交量", Some(SortColumn::Volume)),
+        ("换手率%", None::<SortColumn>),
+        ("振幅%", None::<SortColumn>),
+        ("信号", None::<SortColumn>),
+    ];
+    let header_cells = header_texts.iter().map(|(text, col)| {
+        let display = if *col == Some(state.sort_column) {
+            format!("{}{}", *text, sort_arrow)
+        } else {
+            String::from(*text)
+        };
+        Cell::from(display).style(Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD))
+    });
 
     let header = Row::new(header_cells).height(1);
 
@@ -534,53 +542,49 @@ fn render_status_bar(frame: &mut Frame, area: Rect, state: &DashboardState) {
     frame.render_widget(bar, area);
 }
 
-/// 处理键盘输入，返回 true 表示退出
-pub fn handle_input(state: &mut DashboardState) -> io::Result<bool> {
-    if event::poll(Duration::from_millis(100))? {
-        if let Event::Key(key) = event::read()? {
-            if key.kind != KeyEventKind::Press {
-                return Ok(false);
-            }
+/// 处理单个按键事件，返回 true 表示退出
+pub fn handle_key_event(state: &mut DashboardState, key: crossterm::event::KeyEvent) -> bool {
+    if key.kind != KeyEventKind::Press {
+        return false;
+    }
 
-            match key.code {
-                KeyCode::Char('q') | KeyCode::Esc => return Ok(true),
-                KeyCode::Up | KeyCode::Char('k') => {
-                    if state.selected_row > 0 {
-                        state.selected_row -= 1;
-                    }
-                }
-                KeyCode::Down | KeyCode::Char('j') => {
-                    if state.selected_row + 1 < state.quotes.len() {
-                        state.selected_row += 1;
-                    }
-                }
-                KeyCode::Char('s') => {
-                    // 切换排序列
-                    state.sort_column = match state.sort_column {
-                        SortColumn::Code => SortColumn::Name,
-                        SortColumn::Name => SortColumn::Price,
-                        SortColumn::Price => SortColumn::ChangePct,
-                        SortColumn::ChangePct => SortColumn::Volume,
-                        SortColumn::Volume => SortColumn::Code,
-                    };
-                    state.sort_quotes();
-                }
-                KeyCode::Char('S') => {
-                    // 切换排序方向
-                    state.sort_ascending = !state.sort_ascending;
-                    state.sort_quotes();
-                }
-                KeyCode::Char('i') => {
-                    state.show_indicators = !state.show_indicators;
-                }
-                KeyCode::Char('d') => {
-                    state.show_daily_signals = !state.show_daily_signals;
-                }
-                _ => {}
+    match key.code {
+        KeyCode::Char('q') | KeyCode::Esc => return true,
+        KeyCode::Up | KeyCode::Char('k') => {
+            if state.selected_row > 0 {
+                state.selected_row -= 1;
             }
         }
+        KeyCode::Down | KeyCode::Char('j') => {
+            if state.selected_row + 1 < state.quotes.len() {
+                state.selected_row += 1;
+            }
+        }
+        KeyCode::Char('s') => {
+            // 切换排序列
+            state.sort_column = match state.sort_column {
+                SortColumn::Code => SortColumn::Name,
+                SortColumn::Name => SortColumn::Price,
+                SortColumn::Price => SortColumn::ChangePct,
+                SortColumn::ChangePct => SortColumn::Volume,
+                SortColumn::Volume => SortColumn::Code,
+            };
+            state.sort_quotes();
+        }
+        KeyCode::Char('S') => {
+            // 切换排序方向
+            state.sort_ascending = !state.sort_ascending;
+            state.sort_quotes();
+        }
+        KeyCode::Char('i') => {
+            state.show_indicators = !state.show_indicators;
+        }
+        KeyCode::Char('d') => {
+            state.show_daily_signals = !state.show_daily_signals;
+        }
+        _ => {}
     }
-    Ok(false)
+    false
 }
 
 /// 根据情绪方向返回颜色

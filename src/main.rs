@@ -10,6 +10,8 @@ mod ui;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
+use crossterm::event::EventStream;
+use futures::StreamExt;
 use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::Duration;
@@ -531,6 +533,9 @@ async fn cmd_start(config: AppConfig) -> Result<()> {
         None
     };
 
+    // 渲染信号 channel（数据更新时通知 UI 渲染，使用 watch 确保最新信号不丢失）
+    let (render_tx, mut render_rx) = tokio::sync::watch::channel(());
+
     // 分析 + 提醒任务
     let engine_clone = engine.clone();
     let alert_clone = alert_manager.clone();
@@ -563,7 +568,6 @@ async fn cmd_start(config: AppConfig) -> Result<()> {
 
             // 更新仪表盘状态
             let mut state = dash_clone.lock().await;
-            // 放量信号 → 写入 recent_alerts（需在 update_quotes 消费 quotes 前建名称映射）
             let name_map: std::collections::HashMap<StockCode, String> =
                 quotes.iter().map(|q| (q.code.clone(), q.name.clone())).collect();
             state.update_quotes(quotes);
@@ -571,7 +575,6 @@ async fn cmd_start(config: AppConfig) -> Result<()> {
                 for sig in sigs {
                     if let crate::models::Signal::VolumeSpike { ratio, price, delta } = sig {
                         let name = name_map.get(code).map(|s| s.as_str()).unwrap_or("");
-                        // 循环缓冲区：超过容量时移除最旧的
                         if state.recent_alerts.len() >= MAX_RECENT_ALERTS {
                             state.recent_alerts.pop_front();
                         }
@@ -594,7 +597,6 @@ async fn cmd_start(config: AppConfig) -> Result<()> {
                 }
             }
 
-            // 写入新触发的 tick 信号（同类型信号只保留最新，如新的放量替换旧的放量）
             for (code, sigs) in all_new_signals {
                 let entry = state.tick_signals.entry(code).or_default();
                 for sig in sigs {
@@ -604,33 +606,55 @@ async fn cmd_start(config: AppConfig) -> Result<()> {
                 }
             }
 
-            // 清理过期 tick 信号
             let cutoff = now - chrono::Duration::minutes(tick_display_minutes as i64);
             state.tick_signals.retain(|_, sigs| {
                 sigs.retain(|(_, at)| *at > cutoff);
                 !sigs.is_empty()
             });
+            drop(state);
+
+            // 通知 UI 渲染（watch channel 自动去重）
+            let _ = render_tx.send(());
         }
     });
 
-    // UI 主循环
+    // UI 主循环（事件驱动）
     let mut terminal = ui::dashboard::init_terminal()?;
     let dash_for_ui = dash_state.clone();
+    let mut event_stream = EventStream::new();
+
+    // 初始渲染
+    {
+        let state = dash_for_ui.lock().await;
+        terminal.draw(|frame| ui::dashboard::render(frame, &state))?;
+    }
 
     loop {
-        // 渲染
-        {
-            let state = dash_for_ui.lock().await;
-            terminal.draw(|frame| {
-                ui::dashboard::render(frame, &state);
-            })?;
-        }
+        tokio::select! {
+            // 数据更新时渲染
+            _ = render_rx.changed() => {
+                let state = dash_for_ui.lock().await;
+                terminal.draw(|frame| ui::dashboard::render(frame, &state))?;
+            }
 
-        // 处理输入
-        {
-            let mut state = dash_for_ui.lock().await;
-            if ui::dashboard::handle_input(&mut state)? {
-                break;
+            // 等待键盘事件（事件驱动，非轮询）
+            maybe_event = event_stream.next() => {
+                match maybe_event {
+                    Some(Ok(crossterm::event::Event::Key(key))) => {
+                        if key.kind == crossterm::event::KeyEventKind::Press {
+                            let mut state = dash_for_ui.lock().await;
+                            if ui::dashboard::handle_key_event(&mut *state, key) {
+                                break;
+                            }
+                            // 按键后立即重新渲染（反馈）
+                            terminal.draw(|frame| ui::dashboard::render(frame, &state))?;
+                        }
+                    }
+                    Some(Err(e)) => {
+                        warn!("Event stream error: {}", e);
+                    }
+                    _ => {}
+                }
             }
         }
     }
